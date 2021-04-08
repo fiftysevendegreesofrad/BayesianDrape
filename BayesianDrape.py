@@ -120,11 +120,11 @@ def grade_logpdf(x):
 max_displacement=100
 dist_range = np.arange(100)/20*max_displacement # todo take from command line, also interpolation array size
 offset_logpdf = norm(scale=options.mismatch_prior_std).logpdf
-approxlognorm_from_squaredist = interp1d(dist_range**2,offset_logpdf(dist_range),bounds_error=False,fill_value=-np.inf) # doing this reduced looking up normal pdf from 35% to 10% of runtime of minus_log_likelihood
+approx_squareoffset_logpdf = interp1d(dist_range**2,offset_logpdf(dist_range),bounds_error=False,fill_value=-np.inf) # doing this reduced looking up normal pdf from 35% to 10% of runtime of minus_log_likelihood
 
 # wrap interpolators in functions for profiling stats
-def approxlognormf(x):
-    return approxlognorm_from_squaredist(x)
+def approx_squareoffset_logpdff(x):
+    return approx_squareoffset_logpdf(x)
 def terrain_interpolatorf(x):
     return terrain_interpolator(x)
 
@@ -139,7 +139,7 @@ def minus_log_likelihood(point_offsets,adjacency=adjacency):
     neighbour_grades = adjacency * abs(zs[:, None] - zs[None, :]) * inv_distances
     neighbour_likelihood = grade_logpdf(neighbour_grades).sum() # fixme this currently includes non-neighbours as constant, can we fix with sparse?
     offset_square_distances = ((point_offsets**2).sum(axis=1))
-    offset_likelihood = approxlognormf(offset_square_distances).sum()
+    offset_likelihood = approx_squareoffset_logpdff(offset_square_distances).sum()
     return -(neighbour_likelihood+offset_likelihood)
 
 # Test function

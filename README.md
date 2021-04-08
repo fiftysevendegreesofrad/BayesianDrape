@@ -39,4 +39,3 @@ python -m cProfile -s cumtime BayesianDrape.py  --JUST-LLTEST >tmp && head -n 60
 
 idea for sparseness when i come back to it https://www.google.com/search?client=firefox-b-d&q=scipy+sparse+adjacency+matrix+distance
 
-DO MY PDFS NEED SOME SORT OF WIDTH PARAMETER AS LOGPDF CAN BE >0?
