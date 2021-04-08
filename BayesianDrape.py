@@ -12,6 +12,8 @@ from xarray import DataArray
 from scipy.optimize import minimize
 from scipy.stats import norm
 from scipy.spatial import distance_matrix
+from scipy.sparse import lil_matrix
+from scipy.interpolate import RegularGridInterpolator
 import geopandas as gp
 import pandas as pd
 import numpy as np
@@ -51,6 +53,15 @@ else:
 net_df = gp.read_file(options.shapefile)
 terrain_raster = rioxarray.open_rasterio(options.terrainfile)
 
+print (f"{net_df.crs=}\nterrain raster crs??")
+# todo assert these projections are the same
+
+terrain_xs = np.array(terrain_raster.x,np.float64)
+terrain_ys = np.flip(np.array(terrain_raster.y,np.float64)) 
+terrain_data = np.flip(terrain_raster.data[0],axis=0).T # fixme correct?
+terrain_interpolator = RegularGridInterpolator((terrain_xs,terrain_ys), terrain_data)
+del terrain_xs, terrain_ys, terrain_data, terrain_raster
+
 # Todo: add points to linestrings where they cross raster cells or at least every cell-distance
 # (latter may make more sense as more expensive to compute gradients at cell boundaries)
 
@@ -76,7 +87,7 @@ net_df["point_indices"] = point_indices_all_rows # fixme what if column name exi
 
 num_points = len(all_points_set)
 print (f"{num_points=}")
-adjacency = np.zeros((num_points,num_points),bool) # todo change to sparse
+adjacency = lil_matrix((num_points,num_points),dtype=bool) 
 
 for _,row in net_df.iterrows():
     xs,ys = row.geometry.coords.xy
@@ -84,28 +95,28 @@ for _,row in net_df.iterrows():
         index1 = all_points_set.index(point1)
         index2 = all_points_set.index(point2)
         adjacency[index1,index2]=True
-        adjacency[index2,index1]=True
+        # provided we optimize all points together, we don't store the reverse adjacency 
+        # otherwise each gradient likelihood is counted twice, breaking log likelihood
+        # if we did want to compute gradient for a single point, we should compute reverse adjacency and also halve all gradient log likelihoods
+        # adjacency[index2,index1]=True 
         
 all_points = np.array(all_points_set)
 del all_points_set
+adjacency = adjacency.tocsr().toarray() # undo sparseness for now
 
 # Define posterior log likelihood
 
-def get_heights(points):
-    return np.array(terrain_raster.interp(x=DataArray(points[:,0]),y=DataArray(points[:,1])))[0]
-    
 slope_logpdf = norm(scale=options.slope_prior_std).logpdf
 offset_logpdf = norm(scale=options.mismatch_prior_std).logpdf
+inv_distances = (distance_matrix(all_points,all_points)+np.eye(num_points))**-1 # fixme optimise sparse only compute for neighbours
 llcount=0
-def minus_log_likelihood(point_offsets):
+def minus_log_likelihood(point_offsets,adjacency=adjacency):
     global llcount
     llcount += 1
     point_offsets = point_offsets.reshape(all_points.shape) # as optimize flattens point_offsets
     points_to_interpolate = all_points + point_offsets
-    zs = get_heights(points_to_interpolate)
-    distances = distance_matrix(points_to_interpolate,points_to_interpolate) # fixme optimise sparse
-    distances += np.eye(num_points) #  can ditch once optimized
-    neighbour_slopes = np.arctan(adjacency * abs(zs[:, None] - zs[None, :]) / distances)*180/np.pi # fixme optimize with sparse
+    zs = terrain_interpolator(points_to_interpolate)
+    neighbour_slopes = np.arctan(adjacency * abs(zs[:, None] - zs[None, :]) * inv_distances)*180/np.pi 
     neighbour_likelihood = slope_logpdf(neighbour_slopes).sum() # fixme can optimize if needed by approximating the tan of normal pdf. also, this currently includes non-neighbours as constant
     offset_distances = ((point_offsets**2).sum(axis=1))**0.5 # again, could optimize by approximating square of pdf
     offset_likelihood = offset_logpdf(offset_distances).sum()
@@ -115,13 +126,28 @@ def minus_log_likelihood(point_offsets):
 
 if options.just_lltest:
     offset_unit_vector = np.zeros((num_points,2),float)
+    
+    from timeit import Timer
+    ncalls = 30
+    nrepeats = 10
+    t = Timer(lambda: minus_log_likelihood(offset_unit_vector))
+    print("Current impl time:",min(t.repeat(number=ncalls,repeat=nrepeats)))
+    if hasattr(adjacency,"toarray"):
+        nonsparse_adj = adjacency.toarray()
+        t = Timer(lambda: minus_log_likelihood(offset_unit_vector,adjacency=nonsparse_adj))
+        print("Nonsparse time:",min(t.repeat(number=ncalls,repeat=nrepeats)))
+    
+    
     for i in range(num_points):
         offset_unit_vector[i]=np.array([(i//3)%3,i%3])-1
-    original_lls = [30839.600582931576,30902.71895798501,31176.373047124474,31298.855321002204,31565.480400726177]
+    original_lls = [29233.79119917465, 29869.792894256196, 30479.836034098767, 31233.911375847896, 32133.64223632107]
+    new_lls = []
     for i,oll in enumerate(original_lls):
-        ll=minus_log_likelihood(offset_unit_vector*i)
+        ll = minus_log_likelihood(offset_unit_vector*i)
+        new_lls.append(ll)
         passed=(ll==oll)
         print (f"{i=} {oll=} {ll=} {passed=}")
+    print (f"{new_lls=}")
         
     sys.exit(0)
 
@@ -150,7 +176,7 @@ except TerminateOptException:
     pass
 result = result.reshape(all_points.shape)
 final_points = all_points + result
-optimal_zs = get_heights(final_points)
+optimal_zs = terrain_interpolator(final_points)
 final_log_likelihood = -minus_log_likelihood(result)
 
 # Print result report

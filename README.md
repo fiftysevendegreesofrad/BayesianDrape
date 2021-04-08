@@ -25,4 +25,16 @@ Standard Deviation:	2.221301
 
 Will need to check for precision issues in sum likelihoods.
 
-If it comes to analytical differentiation, do I do it per point (assuming others don't move) or for the ensemble (e.g. automatically with PyTorch)?
+If it comes to analytical differentiation, do I do it per point (assuming others don't move) or for the ensemble (e.g. automatically with autograd pyautodiff auto-diff pytorch)?
+intro to autodiff suitable for jax: https://www.cs.toronto.edu/~rgrosse/courses/csc421_2019/readings/L06%20Automatic%20Differentiation.pdf
+https://github.com/google/jax
+looks great! basically says supports numpy so let's get started with numpy sparse.
+comparison of some autograds: https://arxiv.org/ftp/arxiv/papers/1606/1606.06311.pdf
+http://gcucurull.github.io/deep-learning/2020/06/03/jax-sparse-matrix-multiplication/
+
+
+profile visualisation
+https://jiffyclub.github.io/snakeviz/
+python -m cProfile -s cumtime BayesianDrape.py  --JUST-LLTEST >tmp && head -n 60 tmp
+
+idea for sparseness when i come back to it https://www.google.com/search?client=firefox-b-d&q=scipy+sparse+adjacency+matrix+distance
