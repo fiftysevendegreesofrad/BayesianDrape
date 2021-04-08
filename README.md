@@ -24,3 +24,5 @@ Mean:	2.446443
 Standard Deviation:	2.221301
 
 Will need to check for precision issues in sum likelihoods.
+
+If it comes to analytical differentiation, do I do it per point (assuming others don't move) or for the ensemble (e.g. automatically with PyTorch)?

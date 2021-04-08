@@ -18,6 +18,7 @@ import numpy as np
 from ordered_set import OrderedSet
 from itertools import tee
 from shapely.geometry import LineString
+import sys
 
 def pairwise(iterable):
     "s -> (s0,s1), (s1,s2), (s2, s3), ..."
@@ -31,6 +32,7 @@ op.add_option("--POLYLINE-INPUT",dest="shapefile",help="[REQUIRED] Polyline feat
 op.add_option("--OUTPUT",dest="outfile",help="[REQUIRED] Output feature class",metavar="FILE")
 op.add_option("--SLOPE-PRIOR-STD",dest="slope_prior_std",help="[REQUIRED] Standard deviation of zero-centred prior for path slope",metavar="ANGLE_IN_DEGREES",type="float")
 op.add_option("--SPATIAL-MISMATCH-PRIOR-STD",dest="mismatch_prior_std",help="[REQUIRED] Standard deviation of zero-centred prior for spatial mismatch (in spatial units of projection)",metavar="DISTANCE",type="float")
+op.add_option("--JUST-LLTEST",dest="just_lltest",action="store_true",help="Test mode")
 (options,args) = op.parse_args()
 
 missing_options = []
@@ -102,6 +104,20 @@ def minus_log_likelihood(point_offsets):
     offset_distances = ((point_offsets**2).sum(axis=1))**0.5 # again, could optimize by approximating square of pdf
     offset_likelihood = offset_logpdf(offset_distances).sum()
     return -(neighbour_likelihood+offset_likelihood)
+
+# Test function
+
+if options.just_lltest:
+    offset_unit_vector = np.zeros((num_points,2),float)
+    for i in range(num_points):
+        offset_unit_vector[i]=np.array([(i//3)%3,i%3])-1
+    original_lls = [30839.600582931576,30902.71895798501,31176.373047124474,31298.855321002204,31565.480400726177]
+    for i,oll in enumerate(original_lls):
+        ll=minus_log_likelihood(offset_unit_vector*i)
+        passed=(ll==oll)
+        print (f"{i=} {oll=} {ll=} {passed=}")
+        
+    sys.exit(0)
 
 # Run optimizer
 
