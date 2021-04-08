@@ -35,12 +35,18 @@ op.add_option("--SPATIAL-MISMATCH-PRIOR-STD",dest="mismatch_prior_std",help="[RE
 op.add_option("--JUST-LLTEST",dest="just_lltest",action="store_true",help="Test mode")
 (options,args) = op.parse_args()
 
-missing_options = []
-for option in op.option_list:
-    if option.help.startswith(r'[REQUIRED]') and eval('options.' + option.dest) == None:
-        missing_options.extend(option._long_opts)
-if len(missing_options) > 0:
-    op.error('Missing REQUIRED parameters: ' + str(missing_options))
+if options.just_lltest:
+    options.terrainfile = "data/all_os50_terrain.tif"
+    options.shapefile = "data/test_awkward_link.shp"
+    options.slope_prior_std = 2.2
+    options.mismatch_prior_std = 25
+else:
+    missing_options = []
+    for option in op.option_list:
+        if option.help.startswith(r'[REQUIRED]') and eval('options.' + option.dest) == None:
+            missing_options.extend(option._long_opts)
+    if len(missing_options) > 0:
+        op.error('Missing REQUIRED parameters: ' + str(missing_options))
 
 net_df = gp.read_file(options.shapefile)
 terrain_raster = rioxarray.open_rasterio(options.terrainfile)
