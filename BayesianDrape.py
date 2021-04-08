@@ -10,10 +10,10 @@ from optparse import OptionParser
 import rioxarray # gdal raster is another option should this give trouble though both interpolate with scipy underneath
 from xarray import DataArray
 from scipy.optimize import minimize
-from scipy.stats import norm
+from scipy.stats import norm,expon
 from scipy.spatial import distance_matrix
 from scipy.sparse import lil_matrix
-from scipy.interpolate import RegularGridInterpolator
+from scipy.interpolate import RegularGridInterpolator,interp1d
 import geopandas as gp
 import pandas as pd
 import numpy as np
@@ -106,8 +106,28 @@ adjacency = adjacency.tocsr().toarray() # undo sparseness for now
 
 # Define posterior log likelihood
 
-slope_logpdf = norm(scale=options.slope_prior_std).logpdf
+grade_mean = np.tan(options.slope_prior_std*np.pi/180)
+grade_exp_dist_lambda = 1/grade_mean
+log_grade_exp_dist_lambda = np.log(grade_exp_dist_lambda)
+def grade_logpdf(x):
+    return log_grade_exp_dist_lambda - grade_exp_dist_lambda*x
+
+#test_slope_angles = np.arange(90)
+#test_grades = np.arctan(test_slope_angles/180*np.pi)
+#test_pdf = np.exp(grade_logpdf(test_grades))
+#print(f"{test_slope_angles=}\n{test_pdf=}")
+
+max_displacement=100
+dist_range = np.arange(100)/20*max_displacement # todo take from command line, also interpolation array size
 offset_logpdf = norm(scale=options.mismatch_prior_std).logpdf
+approxlognorm = interp1d(dist_range,offset_logpdf(dist_range),bounds_error=False,fill_value=-np.inf) # doing this reduced looking up normal pdf from 35% to 10% of runtime of minus_log_likelihood
+
+# wrap interpolators in functions for profiling stats
+def approxlognormf(x):
+    return offset_logpdf(x)
+def terrain_interpolatorf(x):
+    return terrain_interpolator(x)
+
 inv_distances = (distance_matrix(all_points,all_points)+np.eye(num_points))**-1 # fixme optimise sparse only compute for neighbours
 llcount=0
 def minus_log_likelihood(point_offsets,adjacency=adjacency):
@@ -115,11 +135,11 @@ def minus_log_likelihood(point_offsets,adjacency=adjacency):
     llcount += 1
     point_offsets = point_offsets.reshape(all_points.shape) # as optimize flattens point_offsets
     points_to_interpolate = all_points + point_offsets
-    zs = terrain_interpolator(points_to_interpolate)
-    neighbour_slopes = np.arctan(adjacency * abs(zs[:, None] - zs[None, :]) * inv_distances)*180/np.pi 
-    neighbour_likelihood = slope_logpdf(neighbour_slopes).sum() # fixme can optimize if needed by approximating the tan of normal pdf. also, this currently includes non-neighbours as constant
+    zs = terrain_interpolatorf(points_to_interpolate)
+    neighbour_grades = adjacency * abs(zs[:, None] - zs[None, :]) * inv_distances
+    neighbour_likelihood = grade_logpdf(neighbour_grades).sum() # fixme can optimize if needed by approximating the tan of normal pdf. also, this currently includes non-neighbours as constant
     offset_distances = ((point_offsets**2).sum(axis=1))**0.5 # again, could optimize by approximating square of pdf
-    offset_likelihood = offset_logpdf(offset_distances).sum()
+    offset_likelihood = approxlognormf(offset_distances).sum()
     return -(neighbour_likelihood+offset_likelihood)
 
 # Test function
@@ -163,7 +183,7 @@ def callback(x):
     last_ll = ll
     print (f"callback {llcount=} {ll=} {lldiff=}")
     llcount=0
-    if lldiff<25: #fixme magic number 
+    if lldiff<1: #fixme magic number 
         result = x # yuck
         raise TerminateOptException()
     
