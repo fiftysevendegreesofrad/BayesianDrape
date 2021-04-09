@@ -8,6 +8,8 @@ Also a bit like Kalman filtering, but making use of extra information specific t
 
 As a physical analog you might like to think about a network made of rubber bands being stretched to fit over the terrain. This is not very accurate as (1) rubber bands only stretch over convex surfaces while this algorithm stretches over concave surfaces also; (2) the rubber band metaphor implies the ends of the rubber band are at a fixed position, whereas here, nothing is fixed. A better, though still approximate physical analog might be to imagine the rubber bands being made of statically charged clingfilm, with a tendency to stick to the surface regardless of whether concave or convex, balanced by an opposing stiffness such that they resist excessive bending. But (unless we allow vertical errors) they will never leave the surface of the terrain, they just have a little local flexibility in regard to exactly which part of it they stick to. This is as far as the analogy can go, because we do not really simulate the elastic and electrostatic forces governing our imaginary material. What we compute is a local maximum a posteriori likelihood for the error model, but given that caveat, visual thinkers may still prefer to imagine stiff clingfilm rubber bands.
 
+this analogy helps not only for understanding, but for seeing why we hope the optimization surface might be relatively smooth. Also, terrain models by definition don't have cliffs at sub-cell level.
+
 Splitting to 10m segments draped on 50m raster gives distribution of (hg+hl)/len for prior (although this includes outliers it should still be representative enough)
 Maximum:	0.509859
 Sum:	15044.436881
@@ -36,6 +38,4 @@ http://gcucurull.github.io/deep-learning/2020/06/03/jax-sparse-matrix-multiplica
 profile visualisation
 https://jiffyclub.github.io/snakeviz/
 python -m cProfile -s cumtime BayesianDrape.py  --JUST-LLTEST >tmp && head -n 60 tmp
-
-idea for sparseness when i come back to it https://www.google.com/search?client=firefox-b-d&q=scipy+sparse+adjacency+matrix+distance
 

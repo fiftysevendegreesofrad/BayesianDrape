@@ -9,10 +9,11 @@
 from optparse import OptionParser
 import rioxarray # gdal raster is another option should this give trouble though both interpolate with scipy underneath
 from xarray import DataArray
-from scipy.optimize import minimize
+from scipy.optimize import minimize,Bounds
 from scipy.stats import norm,expon
 from scipy.spatial import distance_matrix
-from scipy.sparse import lil_matrix
+import scipy.sparse
+from scipy.sparse import lil_matrix,coo_matrix
 from scipy.interpolate import RegularGridInterpolator,interp1d
 import geopandas as gp
 import pandas as pd
@@ -39,7 +40,7 @@ op.add_option("--JUST-LLTEST",dest="just_lltest",action="store_true",help="Test 
 
 if options.just_lltest:
     options.terrainfile = "data/all_os50_terrain.tif"
-    options.shapefile = "data/test_awkward_link.shp"
+    #options.shapefile = "data/test_awkward_link.shp"
     options.slope_prior_std = 2.2
     options.mismatch_prior_std = 25
 else:
@@ -83,18 +84,19 @@ for _,row in net_df.iterrows():
     point_indices_all_rows.append(point_indices)
 net_df["point_indices"] = point_indices_all_rows # fixme what if column name exists already?
 
-# Build point adjacency matrix
+# Build point inverse distance matrix which also serves as adjacency matrix
 
 num_points = len(all_points_set)
 print (f"{num_points=}")
-adjacency = lil_matrix((num_points,num_points),dtype=bool) 
+inverse_distances = lil_matrix((num_points,num_points)) 
 
 for _,row in net_df.iterrows():
     xs,ys = row.geometry.coords.xy
     for point1,point2 in pairwise(zip(xs,ys)):
         index1 = all_points_set.index(point1)
         index2 = all_points_set.index(point2)
-        adjacency[index1,index2]=True
+        (x1,y1),(x2,y2) = point1,point2
+        inverse_distances[index1,index2]=((x2-x1)**2+(y2-y1)**2)**-0.5
         # provided we optimize all points together, we don't store the reverse adjacency 
         # otherwise each gradient likelihood is counted twice, breaking log likelihood
         # if we did want to compute gradient for a single point, we should compute reverse adjacency and also halve all gradient log likelihoods
@@ -102,9 +104,9 @@ for _,row in net_df.iterrows():
         
 all_points = np.array(all_points_set)
 del all_points_set
-adjacency = adjacency.tocsr().toarray() # undo sparseness for now
+inverse_distances = inverse_distances.tocsr()
 
-# Define posterior log likelihood
+# Define priors
 
 grade_mean = np.tan(options.slope_prior_std*np.pi/180)
 grade_exp_dist_lambda = 1/grade_mean
@@ -112,32 +114,61 @@ log_grade_exp_dist_lambda = np.log(grade_exp_dist_lambda)
 def grade_logpdf(x):
     return log_grade_exp_dist_lambda - grade_exp_dist_lambda*x
 
-#test_slope_angles = np.arange(90)
-#test_grades = np.arctan(test_slope_angles/180*np.pi)
-#test_pdf = np.exp(grade_logpdf(test_grades))
-#print(f"{test_slope_angles=}\n{test_pdf=}")
-
-max_displacement=100
-dist_range = np.arange(100)/20*max_displacement # todo take from command line, also interpolation array size
+max_coord_displacement=100 # todo take from command line, also interpolation array size
+max_displacement = (2**0.5) * max_coord_displacement
+dist_range = np.arange(100)/20*max_displacement # 20 was a bug but possibly what made it work as it extends approximation beyond max_coord_displacement
 offset_logpdf = norm(scale=options.mismatch_prior_std).logpdf
-approx_squareoffset_logpdf = interp1d(dist_range**2,offset_logpdf(dist_range),bounds_error=False,fill_value=-np.inf) # doing this reduced looking up normal pdf from 35% to 10% of runtime of minus_log_likelihood
+approx_squareoffset_logpdf = interp1d(dist_range**2,offset_logpdf(dist_range),bounds_error=True,fill_value=-np.inf) # doing this reduced looking up normal pdf from 35% to 10% of runtime of minus_log_likelihood
 
 # wrap interpolators in functions for profiling stats
+approximate_gaussian_prior = True
 def approx_squareoffset_logpdff(x):
-    return approx_squareoffset_logpdf(x)
+    if approximate_gaussian_prior:
+        return approx_squareoffset_logpdf(x)
+    else:
+        return offset_logpdf(x**0.5)
+        
 def terrain_interpolatorf(x):
     return terrain_interpolator(x)
 
-inv_distances = (distance_matrix(all_points,all_points)+np.eye(num_points))**-1 # fixme optimise sparse only compute for neighbours
+def sparse_diag(x):
+    n, = x.shape
+    d = coo_matrix((n,n))
+    d.setdiag(x)
+    return d.tocsr()
+
+use_dense_matrices = (num_points<200)
+if use_dense_matrices: 
+    inverse_distances = inverse_distances.toarray()
+
+# Define posterior log likelihood
+
 llcount=0
-def minus_log_likelihood(point_offsets,adjacency=adjacency):
+
+def minus_log_likelihood(point_offsets):
     global llcount
     llcount += 1
     point_offsets = point_offsets.reshape(all_points.shape) # as optimize flattens point_offsets
     points_to_interpolate = all_points + point_offsets
     zs = terrain_interpolatorf(points_to_interpolate)
-    neighbour_grades = adjacency * abs(zs[:, None] - zs[None, :]) * inv_distances
-    neighbour_likelihood = grade_logpdf(neighbour_grades).sum() # fixme this currently includes non-neighbours as constant, can we fix with sparse?
+    
+    if use_dense_matrices:
+        neighbour_grades = inverse_distances * abs(zs[:, None] - zs[None, :]) 
+        neighbour_likelihood = grade_logpdf(neighbour_grades).sum()
+    else:
+        #the following lines are equivalent to computing the following only for neighbours:
+        #neighbour_grades = inverse_distances * abs(zs[:, None] - zs[None, :]) 
+        #i.e. computing change in height divided by distance for all neighbours
+        #(conveniently, for non-neighbours, inverse_distance=1/inf=0 and they don't appear in the sparse matrix so are not computed)
+        # .data pulls out all explicit elements including explicit zeros in csr matrix
+        sdz = sparse_diag(zs)
+        neighbour_grades = abs((inverse_distances * sdz - sdz * inverse_distances).data) # nb * is now matrix mult. is there a name for a*b-b*a ?
+        # for debug
+        zeropad = num_points**2-neighbour_grades.size
+        corr=zeropad*grade_logpdf(0)
+        
+        neighbour_likelihood = grade_logpdf(neighbour_grades).sum() + corr
+        
     offset_square_distances = ((point_offsets**2).sum(axis=1))
     offset_likelihood = approx_squareoffset_logpdff(offset_square_distances).sum()
     return -(neighbour_likelihood+offset_likelihood)
@@ -145,17 +176,18 @@ def minus_log_likelihood(point_offsets,adjacency=adjacency):
 # Test function
 
 if options.just_lltest:
+    print ("Beginning LL test")
     offset_unit_vector = np.zeros((num_points,2),float)
     
     from timeit import Timer
-    ncalls = 30
-    nrepeats = 10
+    ncalls = 1
+    nrepeats = 1
     t = Timer(lambda: minus_log_likelihood(offset_unit_vector))
     print("Current impl time:",min(t.repeat(number=ncalls,repeat=nrepeats)))
-    if hasattr(adjacency,"toarray"):
-        nonsparse_adj = adjacency.toarray()
-        t = Timer(lambda: minus_log_likelihood(offset_unit_vector,adjacency=nonsparse_adj))
-        print("Nonsparse time:",min(t.repeat(number=ncalls,repeat=nrepeats)))
+    # if hasattr(adjacency,"toarray"):
+        # nonsparse_adj = adjacency.toarray()
+        # t = Timer(lambda: minus_log_likelihood(offset_unit_vector,adjacency=nonsparse_adj))
+        # print("Nonsparse time:",min(t.repeat(number=ncalls,repeat=nrepeats)))
     
     
     for i in range(num_points):
@@ -173,9 +205,6 @@ if options.just_lltest:
 
 # Run optimizer
 
-class TerminateOptException(Exception):
-    pass
-
 def callback(x):
     global llcount,last_ll,result
     ll = -minus_log_likelihood(x)
@@ -183,25 +212,23 @@ def callback(x):
     last_ll = ll
     print (f"callback {llcount=} {ll=} {lldiff=}")
     llcount=0
-    if lldiff<1: #fixme magic number 
-        result = x # yuck
-        raise TerminateOptException()
     
-result = np.zeros((num_points,2),float)
-initial_log_likelihood = -minus_log_likelihood(result)
+init_guess = np.zeros((num_points*2),float)
+initial_log_likelihood = -minus_log_likelihood(init_guess)
 last_ll = initial_log_likelihood
-try:
-    result = minimize(minus_log_likelihood,result,callback = callback) 
-except TerminateOptException:
-    pass
-result = result.reshape(all_points.shape)
-final_points = all_points + result
+# Bounds are needed to stop the optimizer wandering beyond the furthest approximated distance of the offset prior, which becomes flat at that point
+bounds = Bounds(-max_coord_displacement,max_coord_displacement) # not used currently as bounds optimizer not working
+print ("Starting optimizer")
+result = minimize(minus_log_likelihood,init_guess,callback = callback) 
+print (f"Finished optimizing: {result['success']=} {result['message']}")
+final_offsets = result["x"].reshape(all_points.shape)
+final_points = all_points + final_offsets
 optimal_zs = terrain_interpolator(final_points)
-final_log_likelihood = -minus_log_likelihood(result)
+final_log_likelihood = -minus_log_likelihood(final_offsets)
 
 # Print result report
 
-offset_distances = ((result**2).sum(axis=1))**0.5
+offset_distances = ((final_offsets**2).sum(axis=1))**0.5
 mean_offset_dist = offset_distances.mean()
 max_offset_dist = offset_distances.max()
 print (f"{initial_log_likelihood=}\n{final_log_likelihood=}\n{mean_offset_dist=}\n{max_offset_dist=}")
