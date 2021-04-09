@@ -79,6 +79,37 @@ it's stopped complaining about precision? though my results are middling. priors
 * still not approximating gaussian prior
 * fix for sparse
 
-WTF the working one used slope = np.arctan(height,dist) !! not even a function! checkout and rerun testing types to be sure!
+* if precision gets fixed maybe i can bring back inverse_distances
 
-now with the exponential approx prior it complains of precision again
+
+now with the exponential approx grade prior translated to slope, it complains of precision again
+
+WTF the working one used slope = np.arctan(height,dist) !! not even a function! checkout and rerun testing types to be sure!
+ok so my convergence was based on a bug - fix this bug and precision issues return even with gaussian slope prior.
+
+***BUT WE KNOW THEY HAVE TO DO WITH SLOPE COMPUTATION OR PRIORS***
+
+trying to invent a precise arctan i didn't do any better than numpy (funny that)
+
+maybe make 2d slope prior - for short segments it shouldn't go nuts?
+
+but distances minimum in the test case is 0.5 so we don't have insane small values there. 
+
+np.sum always improves precision by pairwise add if no axis given. else python math.fsum may be worth a look but slow.
+
+msum and fsum. not sure which is faster but fsum is exact.
+or can we get a float128? not easily, if we can it may only be float64 underneath.
+
+
+testing sum - by replacing with fsum - is this the issue? no, still precision loss.
+
+VISUALISE PRIORS TO SANITY CHECK. MAYBE PREVIOUS BUGS (LIKE THE ZERO SUMMING) EFFECTIVELY CAUSED WEIRD PRIORS THAT MADE IT WORK OK. TWEAK PRIORS TO MAKE WORK?
+
+- THE BUGGY ARCTAN DISCARDED DISTANCE - COULD DISTANCE BE BETTER RECOMPUTED EACH TIME
+- THE BUGGY ZEROADD DISCARDED WHAT? WILL HAVE REDUCED INFLENCE OF ALL OTHER PRIORS. MAYBE ITS TRYING TO OPTIM TOO FAST? don't forget moving to differentiation is an option now.
+
+or is it not really a precision issue but a convergence one?
+
+WHEN DID WE GET THE REALLY NICE OUTPUT, WHAT WERE WE DOING?
+
+(bayesiandrape) D:\BayesianDrape>python -m cProfile -o profile.prof -s cumtime BayesianDrape.py --TERRAIN-INPUT=data/all_os50_terrain.tif --POLYLINE-INPUT=data/test_awkward_link.shp --OUTPUT=data/test_output.shp --SLOPE-PRIOR-STD=2.2 --SPATIAL-MISMATCH-PRIOR-STD=25

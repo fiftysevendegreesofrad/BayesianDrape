@@ -10,7 +10,7 @@ from optparse import OptionParser
 import rioxarray # gdal raster is another option should this give trouble though both interpolate with scipy underneath
 from xarray import DataArray
 from scipy.optimize import minimize,Bounds
-from scipy.stats import norm,expon
+from scipy.stats import norm,expon,describe
 from scipy.spatial import distance_matrix
 import scipy.sparse
 from scipy.sparse import lil_matrix,coo_matrix
@@ -22,6 +22,7 @@ from ordered_set import OrderedSet
 from itertools import tee
 from shapely.geometry import LineString
 import sys
+from math import fsum
 
 def pairwise(iterable):
     "s -> (s0,s1), (s1,s2), (s2, s3), ..."
@@ -84,7 +85,7 @@ for _,row in net_df.iterrows():
     point_indices_all_rows.append(point_indices)
 net_df["point_indices"] = point_indices_all_rows # fixme what if column name exists already?
 
-# Build point inverse distance matrix which also serves as adjacency matrix
+# Build point inverse distance matrix and adjacency matrix
 
 num_points = len(all_points_set)
 print (f"{num_points=}")
@@ -109,6 +110,8 @@ del all_points_set
 distances = distances.tocsr()
 adjacency = adjacency.tocsr()
 
+print (f"{distances.data.min()=}")
+
 # Define priors
 
 # Exponential grade prior - though we convert to a slope prior for precision reasons
@@ -121,9 +124,14 @@ def grade_logpdf(grade):
 slope_angle_range = np.arange(901)/10 # fixme could be more canny with spacing to speed up if needed
 slope_pdf_interp_points = grade_logpdf(np.tan(slope_angle_range/180*np.pi))
 slope_pdf_interp_points[-1] = slope_pdf_interp_points[-2]*2 # fill last value to prevent it dominating likelihood computations
-# fixme can i approximate the tan without precision issues? yes quite possibly, from gradient, as that happened before. only if profiler indicates an issue
+# fixme can i approximate the tan without precision issues? yes quite possibly, from gradient, as that happened before. only if profiler indicates an issue though and it makes problems outside last interp point
 approx_slope_logpdf = interp1d(slope_angle_range,slope_pdf_interp_points,bounds_error=True) 
 
+slope_prior = "approx_grade_expon"
+def slope_logpdf(angle):
+    if slope_prior == "approx_grade_expon":
+        return approx_slope_logpdf(angle)
+    assert False
 
 max_coord_displacement=100 # todo take from command line, also interpolation array size
 max_displacement = (2**0.5) * max_coord_displacement
@@ -168,7 +176,8 @@ def minus_log_likelihood(point_offsets):
         all_heightdiffs = abs(zs[:, None] - zs[None, :])
         neighbour_heightdiffs = all_heightdiffs[np.nonzero(adjacency)]
         neighbour_distances = distances[np.nonzero(adjacency)]
-        neighbour_likelihood = approx_slope_logpdf(np.arctan(neighbour_heightdiffs/neighbour_distances)/np.pi*180).sum()
+        neighbour_angles = np.arctan(neighbour_heightdiffs/neighbour_distances)/np.pi*180
+        neighbour_likelihood = fsum(slope_logpdf(neighbour_angles))
     else:
         #the following lines are equivalent to computing the following only for neighbours:
         #neighbour_grades = inverse_distances * abs(zs[:, None] - zs[None, :]) 
@@ -180,7 +189,7 @@ def minus_log_likelihood(point_offsets):
         neighbour_likelihood = grade_logpdf(neighbour_grades).sum()
 
     offset_square_distances = ((point_offsets**2).sum(axis=1))
-    offset_likelihood = approx_squareoffset_logpdff(offset_square_distances).sum()
+    offset_likelihood = fsum(approx_squareoffset_logpdff(offset_square_distances))
     return -(neighbour_likelihood+offset_likelihood)
 
 # Test function
