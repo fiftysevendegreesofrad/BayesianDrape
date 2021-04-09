@@ -95,6 +95,7 @@ for _,row in net_df.iterrows():
     for point1,point2 in pairwise(zip(xs,ys)):
         index1 = all_points_set.index(point1)
         index2 = all_points_set.index(point2)
+        assert index1!=index2
         (x1,y1),(x2,y2) = point1,point2
         inverse_distances[index1,index2]=((x2-x1)**2+(y2-y1)**2)**-0.5
         # provided we optimize all points together, we don't store the reverse adjacency 
@@ -121,7 +122,7 @@ offset_logpdf = norm(scale=options.mismatch_prior_std).logpdf
 approx_squareoffset_logpdf = interp1d(dist_range**2,offset_logpdf(dist_range),bounds_error=True,fill_value=-np.inf) # doing this reduced looking up normal pdf from 35% to 10% of runtime of minus_log_likelihood
 
 # wrap interpolators in functions for profiling stats
-approximate_gaussian_prior = True
+approximate_gaussian_prior = False
 def approx_squareoffset_logpdff(x):
     if approximate_gaussian_prior:
         return approx_squareoffset_logpdf(x)
@@ -153,22 +154,19 @@ def minus_log_likelihood(point_offsets):
     zs = terrain_interpolatorf(points_to_interpolate)
     
     if use_dense_matrices:
-        neighbour_grades = inverse_distances * abs(zs[:, None] - zs[None, :]) 
+        all_grades = inverse_distances * abs(zs[:, None] - zs[None, :])
+        neighbour_grades = all_grades[np.nonzero(inverse_distances)]
         neighbour_likelihood = grade_logpdf(neighbour_grades).sum()
     else:
         #the following lines are equivalent to computing the following only for neighbours:
         #neighbour_grades = inverse_distances * abs(zs[:, None] - zs[None, :]) 
         #i.e. computing change in height divided by distance for all neighbours
-        #(conveniently, for non-neighbours, inverse_distance=1/inf=0 and they don't appear in the sparse matrix so are not computed)
+        #(conveniently, for non-neighbours, inversedistance=1/inf=0 and they don't appear in the sparse matrix so are not computed)
         # .data pulls out all explicit elements including explicit zeros in csr matrix
         sdz = sparse_diag(zs)
         neighbour_grades = abs((inverse_distances * sdz - sdz * inverse_distances).data) # nb * is now matrix mult. is there a name for a*b-b*a ?
-        # for debug
-        zeropad = num_points**2-neighbour_grades.size
-        corr=zeropad*grade_logpdf(0)
-        
-        neighbour_likelihood = grade_logpdf(neighbour_grades).sum() + corr
-        
+        neighbour_likelihood = grade_logpdf(neighbour_grades).sum()
+
     offset_square_distances = ((point_offsets**2).sum(axis=1))
     offset_likelihood = approx_squareoffset_logpdff(offset_square_distances).sum()
     return -(neighbour_likelihood+offset_likelihood)

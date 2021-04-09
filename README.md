@@ -39,3 +39,35 @@ profile visualisation
 https://jiffyclub.github.io/snakeviz/
 python -m cProfile -s cumtime BayesianDrape.py  --JUST-LLTEST >tmp && head -n 60 tmp
 
+
+is my func broken? how to test when i've changed behaviour? add zeros back in, LLtest, rerun?
+
+ok there is a precision issue with func
+
+weirdly its fixed by the zero padding
+
+putting bounds back in causes opt fail (differt opt alg)
+
+right when did it work? not sure now :(
+
+if it helps with approximator i could put in a gradient outside the widest limit
+
+
+also i could revert to dense matrix + let optimizer run longer
+
+NOW QUITE NICE THOUGH COMPLAINS PRECISION LOSS
+
+try sparse again - very similar output
+
+COMPARE LLTEST SPARSE ZEROPAD/NON - very similar so sparse isn't the problem
+
+THEN TRY WITHOUT THE ZEROS AGAIN - LLTEST is vaguely similar not quite so much (numbers off by 1%), precision issue then?
+but everything i checked is float64 - including interpolator outputs
+
+use log neighbour grades?
+could it be that we get too close to neighbours?
+does this work with exact logpdf so i can rule that out for now? yes. keep using exact, but that's not the issue.
+
+noticable how it really likes making flat roads right now
+
+
