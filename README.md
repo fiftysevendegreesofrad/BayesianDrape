@@ -70,4 +70,9 @@ does this work with exact logpdf so i can rule that out for now? yes. keep using
 
 noticable how it really likes making flat roads right now
 
+should i put lower limit on grade prior in case there are any super short distances messing us up? ok now done via return to slope as this also should fix any inverse distance/grade precision issues 
+
+it's stopped complaining about precision? though my results are middling. priors are kinda wrong?
+
+* if i go back to angles i should make a table again
 

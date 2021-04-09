@@ -88,8 +88,8 @@ net_df["point_indices"] = point_indices_all_rows # fixme what if column name exi
 
 num_points = len(all_points_set)
 print (f"{num_points=}")
-inverse_distances = lil_matrix((num_points,num_points)) 
-
+distances = lil_matrix((num_points,num_points))
+adjacency = lil_matrix((num_points,num_points),dtype=bool)
 for _,row in net_df.iterrows():
     xs,ys = row.geometry.coords.xy
     for point1,point2 in pairwise(zip(xs,ys)):
@@ -97,7 +97,8 @@ for _,row in net_df.iterrows():
         index2 = all_points_set.index(point2)
         assert index1!=index2
         (x1,y1),(x2,y2) = point1,point2
-        inverse_distances[index1,index2]=((x2-x1)**2+(y2-y1)**2)**-0.5
+        distances[index1,index2]=((x2-x1)**2+(y2-y1)**2)**0.5
+        adjacency[index1,index2]=True
         # provided we optimize all points together, we don't store the reverse adjacency 
         # otherwise each gradient likelihood is counted twice, breaking log likelihood
         # if we did want to compute gradient for a single point, we should compute reverse adjacency and also halve all gradient log likelihoods
@@ -105,15 +106,19 @@ for _,row in net_df.iterrows():
         
 all_points = np.array(all_points_set)
 del all_points_set
-inverse_distances = inverse_distances.tocsr()
+distances = distances.tocsr()
+adjacency = adjacency.tocsr()
 
 # Define priors
 
-grade_mean = np.tan(options.slope_prior_std*np.pi/180)
-grade_exp_dist_lambda = 1/grade_mean
-log_grade_exp_dist_lambda = np.log(grade_exp_dist_lambda)
-def grade_logpdf(x):
-    return log_grade_exp_dist_lambda - grade_exp_dist_lambda*x
+slope_logpdf = norm(scale=options.slope_prior_std).logpdf
+#grade_mean = np.tan(options.slope_prior_std*np.pi/180)
+#grade_exp_dist_lambda = 1/grade_mean
+#log_grade_exp_dist_lambda = np.log(grade_exp_dist_lambda)
+def grade_logpdf(height,dist):
+    #return log_grade_exp_dist_lambda - grade_exp_dist_lambda*x
+    slope = np.arctan(height,dist)
+    return slope_logpdf(slope)
 
 max_coord_displacement=100 # todo take from command line, also interpolation array size
 max_displacement = (2**0.5) * max_coord_displacement
@@ -122,9 +127,9 @@ offset_logpdf = norm(scale=options.mismatch_prior_std).logpdf
 approx_squareoffset_logpdf = interp1d(dist_range**2,offset_logpdf(dist_range),bounds_error=True,fill_value=-np.inf) # doing this reduced looking up normal pdf from 35% to 10% of runtime of minus_log_likelihood
 
 # wrap interpolators in functions for profiling stats
-approximate_gaussian_prior = False
+approximate_offset_prior = False
 def approx_squareoffset_logpdff(x):
-    if approximate_gaussian_prior:
+    if approximate_offset_prior:
         return approx_squareoffset_logpdf(x)
     else:
         return offset_logpdf(x**0.5)
@@ -140,7 +145,8 @@ def sparse_diag(x):
 
 use_dense_matrices = (num_points<200)
 if use_dense_matrices: 
-    inverse_distances = inverse_distances.toarray()
+    distances = distances.toarray()
+    adjacency = adjacency.toarray()
 
 # Define posterior log likelihood
 
@@ -154,9 +160,10 @@ def minus_log_likelihood(point_offsets):
     zs = terrain_interpolatorf(points_to_interpolate)
     
     if use_dense_matrices:
-        all_grades = inverse_distances * abs(zs[:, None] - zs[None, :])
-        neighbour_grades = all_grades[np.nonzero(inverse_distances)]
-        neighbour_likelihood = grade_logpdf(neighbour_grades).sum()
+        all_heightdiffs = abs(zs[:, None] - zs[None, :])
+        neighbour_heightdiffs = all_heightdiffs[np.nonzero(adjacency)]
+        neighbour_distances = distances[np.nonzero(adjacency)]
+        neighbour_likelihood = grade_logpdf(neighbour_heightdiffs,neighbour_distances).sum()
     else:
         #the following lines are equivalent to computing the following only for neighbours:
         #neighbour_grades = inverse_distances * abs(zs[:, None] - zs[None, :]) 
