@@ -75,4 +75,10 @@ should i put lower limit on grade prior in case there are any super short distan
 it's stopped complaining about precision? though my results are middling. priors are kinda wrong?
 
 * if i go back to angles i should make a table again
+* still not using bounds
+* still not approximating gaussian prior
+* fix for sparse
 
+WTF the working one used slope = np.arctan(height,dist) !! not even a function! checkout and rerun testing types to be sure!
+
+now with the exponential approx prior it complains of precision again

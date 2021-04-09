@@ -111,14 +111,19 @@ adjacency = adjacency.tocsr()
 
 # Define priors
 
-slope_logpdf = norm(scale=options.slope_prior_std).logpdf
-#grade_mean = np.tan(options.slope_prior_std*np.pi/180)
-#grade_exp_dist_lambda = 1/grade_mean
-#log_grade_exp_dist_lambda = np.log(grade_exp_dist_lambda)
-def grade_logpdf(height,dist):
-    #return log_grade_exp_dist_lambda - grade_exp_dist_lambda*x
-    slope = np.arctan(height,dist)
-    return slope_logpdf(slope)
+# Exponential grade prior - though we convert to a slope prior for precision reasons
+grade_mean = np.tan(options.slope_prior_std*np.pi/180)
+grade_exp_dist_lambda = 1/grade_mean
+log_grade_exp_dist_lambda = np.log(grade_exp_dist_lambda)
+def grade_logpdf(grade):
+    return log_grade_exp_dist_lambda - grade_exp_dist_lambda*grade
+    
+slope_angle_range = np.arange(901)/10 # fixme could be more canny with spacing to speed up if needed
+slope_pdf_interp_points = grade_logpdf(np.tan(slope_angle_range/180*np.pi))
+slope_pdf_interp_points[-1] = slope_pdf_interp_points[-2]*2 # fill last value to prevent it dominating likelihood computations
+# fixme can i approximate the tan without precision issues? yes quite possibly, from gradient, as that happened before. only if profiler indicates an issue
+approx_slope_logpdf = interp1d(slope_angle_range,slope_pdf_interp_points,bounds_error=True) 
+
 
 max_coord_displacement=100 # todo take from command line, also interpolation array size
 max_displacement = (2**0.5) * max_coord_displacement
@@ -163,7 +168,7 @@ def minus_log_likelihood(point_offsets):
         all_heightdiffs = abs(zs[:, None] - zs[None, :])
         neighbour_heightdiffs = all_heightdiffs[np.nonzero(adjacency)]
         neighbour_distances = distances[np.nonzero(adjacency)]
-        neighbour_likelihood = grade_logpdf(neighbour_heightdiffs,neighbour_distances).sum()
+        neighbour_likelihood = approx_slope_logpdf(np.arctan(neighbour_heightdiffs/neighbour_distances)/np.pi*180).sum()
     else:
         #the following lines are equivalent to computing the following only for neighbours:
         #neighbour_grades = inverse_distances * abs(zs[:, None] - zs[None, :]) 
