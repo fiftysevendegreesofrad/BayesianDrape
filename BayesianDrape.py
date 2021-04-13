@@ -15,10 +15,15 @@ from scipy.spatial import distance_matrix
 from scipy.special import erfc
 import scipy.sparse
 from scipy.sparse import lil_matrix,coo_matrix
-from scipy.interpolate import RegularGridInterpolator,interp1d
+from scipy.interpolate import RegularGridInterpolator
 import geopandas as gp
 import pandas as pd
-import numpy as np
+#from jax.config import config
+#config.update("jax_enable_x64", True)
+#import jax
+#import jax.numpy as np
+import autograd.numpy as np
+from autograd import grad
 from ordered_set import OrderedSet
 from itertools import tee,combinations
 from shapely.geometry import LineString
@@ -37,7 +42,6 @@ op.add_option("--OUTPUT",dest="outfile",help="[REQUIRED] Output feature class",m
 op.add_option("--SLOPE-PRIOR-SCALE",dest="slope_prior_std",help="[REQUIRED] Scale of exponential prior for path slope (equivalent to mean slope)",metavar="ANGLE_IN_DEGREES",type="float")
 op.add_option("--SPATIAL-MISMATCH-PRIOR-STD",dest="mismatch_prior_std",help="[REQUIRED] Standard deviation of zero-centred Gaussian prior for spatial mismatch (in spatial units of projection)",metavar="DISTANCE",type="float")
 op.add_option("--SPATIAL-MISMATCH-MAX",dest="mismatch_max",help="Maximum permissible spatial mismatch (in spatial units of projection; defaults to 4x mismatch prior std)",metavar="DISTANCE",type="float")
-op.add_option("--SPATIAL-MISMATCH-PRIOR-APPROX-SAMPLES",dest="offset_prior_approx_samples",help="Number of samples per dimension for approximating spatial mismatch prior",metavar="N",type="int",default=100)
 op.add_option("--SLOPE-CONTINUITY-PARAM",dest="slope_continuity",help="Slope continuity parameter",metavar="X",type="float",default=0.38)
 op.add_option("--JUST-LLTEST",dest="just_lltest",action="store_true",help="Test mode")
 op.add_option("--GRADIENT-NEIGHBOUR-DIFFERENCE-OUTPUT",dest="grad_neighbour_diff_file",help="Output for distribution of neighbour gradient differences (for computing autocorrelation)",metavar="FILE")
@@ -51,6 +55,9 @@ if not options.just_lltest:
             missing_options.extend(option._long_opts)
     if len(missing_options) > 0:
         op.error('Missing REQUIRED parameters: ' + str(missing_options))
+
+if not options.mismatch_max:
+    options.mismatch_max = options.mismatch_prior_std * 4
 
 net_df = gp.read_file(options.shapefile)
 terrain_raster = rioxarray.open_rasterio(options.terrainfile)
@@ -113,7 +120,6 @@ mean_segment_length = np.mean(distances.data)
 print (f"{distances.data.min()=}")
 
 # Compute slope autocorr distribution
-# fixme if std not provided for autocorr, do this efficiently and estimate distribution as appropriate
 
 if options.grad_neighbour_diff_file:
     neighbour_grade_diffs = []
@@ -157,56 +163,27 @@ print (f"{my_exp_logpdf(0)=}")
 print (f"{grade_exp_dist_lambda=}")
 print (f"{grade_logpdf(0)=}")
 
-slope_angle_range = np.arange(901)/10 # fixme could be more canny with spacing to speed up if needed
-slope_pdf_interp_points = grade_logpdf(np.tan(slope_angle_range/180*np.pi))
-slope_pdf_interp_points[-1] = slope_pdf_interp_points[-2]*2 # fill last value to prevent it dominating likelihood computations
-# fixme can i approximate the tan without precision issues? yes quite possibly, from gradient, as that happened before. only if profiler indicates an issue though and it makes problems outside last interp point
-approx_slope_logpdf = interp1d(slope_angle_range,slope_pdf_interp_points,bounds_error=True) # fixme get rid of tan if we keep this also incorporate 'weird'
-
-#slope_prior = "approx_grade_expon"
-slope_prior = "exact_grade_expon"
-def grade_logpdf_f(grade):
-    if slope_prior == "approx_grade_expon":
-        return approx_grade_logpdf(grade)
-    if slope_prior == "exact_grade_expon":
-        return grade_logpdf(grade)
-    assert False
-
-if options.mismatch_max:
-    max_coord_displacement=mismatch_max
-else:
-    max_coord_displacement=4*options.mismatch_prior_std
-    
-max_displacement = (2**0.5) * max_coord_displacement
-dist_range = np.arange(options.offset_prior_approx_samples)/options.offset_prior_approx_samples*max_displacement 
-offset_logpdf = norm(scale=options.mismatch_prior_std).logpdf
-approx_squareoffset_logpdf = interp1d(dist_range**2,offset_logpdf(dist_range),bounds_error=True,fill_value=-np.inf) # doing this reduced looking up normal pdf from 35% to 10% of runtime of minus_log_likelihood
-
-# wrap interpolators in functions for profiling stats
-approximate_offset_prior = True
-def approx_squareoffset_logpdff(x):
-    if approximate_offset_prior:
-        return approx_squareoffset_logpdf(x)
-    else:
-        return offset_logpdf(x**0.5)
+sigma = options.mismatch_prior_std
+sigma_sq = sigma**2
+k = -np.log(sigma)-0.5*np.log(2*np.pi)
+def squareoffset_logpdf(x):
+    return k-(x/sigma_sq)/2 
         
-def terrain_interpolatorf(x):
-    return terrain_interpolator(x)
 
-def sparse_diag(x):
-    n, = x.shape
-    d = coo_matrix((n,n))
-    d.setdiag(x)
-    return d.tocsr()
 
-inverse_distances = distances.copy()
-inverse_distances.data**=-1
+
+n1s,n2s,neighbour_distances = scipy.sparse.find(distances) 
+neighbour_inv_distances = np.asarray(distances[n1s,n2s])[0]**-1
 
 use_dense_matrices = (num_points<200)
 if use_dense_matrices: 
+    print ("Using DENSE matrices")
     adjacency = np.zeros((num_points,num_points),bool)
     adjacency[distances.nonzero()] = 1
     distances = distances.toarray()
+    neighbour_distances = distances[np.nonzero(adjacency)] # not efficient
+else:
+    print ("Using SPARSE matrices")
     
 print (f"{mean_segment_length=}")
 
@@ -232,7 +209,7 @@ if show_distributions:
     
     grade = np.arange(1000)/1000
     e = my_exp_logpdf(grade)
-    me = grade_logpdf_f(grade)
+    me = grade_logpdf(grade)
     plt.plot(grade,e,label="exp")
     plt.plot(grade,me,label="mine")
     plt.legend()
@@ -253,32 +230,31 @@ def minus_log_likelihood(point_offsets):
     llcount += 1
     point_offsets = point_offsets.reshape(all_points.shape) # as optimize flattens point_offsets
     points_to_interpolate = all_points + point_offsets
-    zs = terrain_interpolatorf(points_to_interpolate)
+    zs = terrain_interpolator(points_to_interpolate)
     
     if use_dense_matrices:
         all_heightdiffs = abs(zs[:, None] - zs[None, :])
         neighbour_heightdiffs = all_heightdiffs[np.nonzero(adjacency)]
-        neighbour_distances = distances[np.nonzero(adjacency)] # not efficient
         neighbour_grades = neighbour_heightdiffs/neighbour_distances
     else:
-        n1s,n2s,neighbour_distances = scipy.sparse.find(distances) 
-        neighbour_inv_distances = np.asarray(inverse_distances[n1s,n2s])[0]
         neighbour_heightdiffs = abs(zs[n1s]-zs[n2s]) 
         neighbour_grades = neighbour_heightdiffs*neighbour_inv_distances
 
-    length_weighted_neighbour_likelihood = grade_logpdf_f(neighbour_grades)*neighbour_distances / mean_segment_length
+    length_weighted_neighbour_likelihood = grade_logpdf(neighbour_grades)*neighbour_distances / mean_segment_length
     neighbour_likelihood = length_weighted_neighbour_likelihood.sum()
     
     offset_square_distances = ((point_offsets**2).sum(axis=1))
-    offset_likelihood = approx_squareoffset_logpdff(offset_square_distances).sum()
+    offset_likelihood = squareoffset_logpdf(offset_square_distances).sum()
     return -(neighbour_likelihood+offset_likelihood)
+
+minus_log_likelihood_gradient = grad(minus_log_likelihood)
 
 # Test function
 
 if options.just_lltest:
     print ("Beginning LL test")
     offset_unit_vector = np.zeros((num_points,2),float)
-    
+    print(f"{minus_log_likelihood_gradient(offset_unit_vector)=}")
     from timeit import Timer
     ncalls = 1
     nrepeats = 1
@@ -317,9 +293,10 @@ init_guess = np.zeros((num_points*2),float)
 initial_log_likelihood = -minus_log_likelihood(init_guess)
 last_ll = initial_log_likelihood
 # Bounds are needed to stop the optimizer wandering beyond the furthest approximated distance of the offset prior, which becomes flat at that point
-bounds = Bounds(-max_coord_displacement,max_coord_displacement) # not used currently as bounds optimizer not working
+bounds = Bounds(-options.mismatch_max,options.mismatch_max) 
 print ("Starting optimizer")
-result = minimize(minus_log_likelihood,init_guess,callback = callback,bounds=bounds,options=dict(maxfun=100000,maxiter=np.inf)) 
+# setting maxiter=20 is better than nothing but doesn't give ideal results on awkward link
+result = minimize(minus_log_likelihood,init_guess,callback = callback,bounds=bounds,jac=minus_log_likelihood_gradient,options=dict(maxiter=200)) 
 print (f"Finished optimizing: {result['success']=} {result['message']}")
 final_offsets = result["x"].reshape(all_points.shape)
 final_points = all_points + final_offsets
