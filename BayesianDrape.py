@@ -10,8 +10,9 @@ from optparse import OptionParser
 import rioxarray # gdal raster is another option should this give trouble though both interpolate with scipy underneath
 from xarray import DataArray
 from scipy.optimize import minimize,Bounds
-from scipy.stats import norm,expon,describe,gamma,weibull_min
+from scipy.stats import norm,expon,describe
 from scipy.spatial import distance_matrix
+from scipy.special import erfc
 import scipy.sparse
 from scipy.sparse import lil_matrix,coo_matrix
 from scipy.interpolate import RegularGridInterpolator,interp1d
@@ -34,10 +35,12 @@ op = OptionParser()
 op.add_option("--TERRAIN-INPUT",dest="terrainfile",help="[REQUIRED] Terrain model",metavar="FILE")
 op.add_option("--POLYLINE-INPUT",dest="shapefile",help="[REQUIRED] Polyline feature class e.g. network or GPS trace",metavar="FILE")
 op.add_option("--OUTPUT",dest="outfile",help="[REQUIRED] Output feature class",metavar="FILE")
-op.add_option("--SLOPE-PRIOR-STD",dest="slope_prior_std",help="[REQUIRED] Standard deviation of zero-centred prior for path slope",metavar="ANGLE_IN_DEGREES",type="float")
-op.add_option("--SPATIAL-MISMATCH-PRIOR-STD",dest="mismatch_prior_std",help="[REQUIRED] Standard deviation of zero-centred prior for spatial mismatch (in spatial units of projection)",metavar="DISTANCE",type="float")
+op.add_option("--SLOPE-PRIOR-SCALE",dest="slope_prior_std",help="[REQUIRED] Scale of exponential prior for path slope (equivalent to mean slope)",metavar="ANGLE_IN_DEGREES",type="float")
+op.add_option("--SPATIAL-MISMATCH-PRIOR-STD",dest="mismatch_prior_std",help="[REQUIRED] Standard deviation of zero-centred Gaussian prior for spatial mismatch (in spatial units of projection)",metavar="DISTANCE",type="float")
+op.add_option("--SLOPE-CONTINUITY-PARAM",dest="slope_continuity",help="Slope continuity parameter",metavar="X",type="float",default=0.38)
 op.add_option("--JUST-LLTEST",dest="just_lltest",action="store_true",help="Test mode")
 op.add_option("--GRADIENT-NEIGHBOUR-DIFFERENCE-OUTPUT",dest="grad_neighbour_diff_file",help="Output for distribution of neighbour gradient differences (for computing autocorrelation)",metavar="FILE")
+
 (options,args) = op.parse_args()
 
 if not options.just_lltest:
@@ -137,24 +140,35 @@ if options.grad_neighbour_diff_file:
 
 # Exponential grade prior - though we convert to a slope prior for precision reasons
 grade_mean = np.tan(options.slope_prior_std*np.pi/180)
+print (f"{grade_mean=}")
 grade_exp_dist_lambda = 1/grade_mean
-log_grade_exp_dist_lambda = np.log(grade_exp_dist_lambda)
-def grade_logpdf(grade,weird=0):
-    return log_grade_exp_dist_lambda - grade_exp_dist_lambda*grade + weird*(-np.exp(-grade) + 1)
-    
+def my_exp_logpdf(grade):
+    return -np.log(grade_exp_dist_lambda) - grade_exp_dist_lambda*grade
+
+sc = options.slope_continuity * grade_exp_dist_lambda
+log_normalizing_constant = -np.log ( ( np.pi**0.5 * np.exp( grade_exp_dist_lambda**2/4/sc ) * erfc (grade_exp_dist_lambda/2/sc**0.5) ) \
+                                    / 2 / sc**0.5 \
+                                    )
+def grade_logpdf(grade):
+    return log_normalizing_constant - grade_exp_dist_lambda*grade - sc*grade**2 
+
+print (f"{my_exp_logpdf(0)=}")
+print (f"{grade_exp_dist_lambda=}")
+print (f"{grade_logpdf(0)=}")
+
 slope_angle_range = np.arange(901)/10 # fixme could be more canny with spacing to speed up if needed
 slope_pdf_interp_points = grade_logpdf(np.tan(slope_angle_range/180*np.pi))
 slope_pdf_interp_points[-1] = slope_pdf_interp_points[-2]*2 # fill last value to prevent it dominating likelihood computations
 # fixme can i approximate the tan without precision issues? yes quite possibly, from gradient, as that happened before. only if profiler indicates an issue though and it makes problems outside last interp point
-approx_slope_logpdf = interp1d(slope_angle_range,slope_pdf_interp_points,bounds_error=True) 
+approx_slope_logpdf = interp1d(slope_angle_range,slope_pdf_interp_points,bounds_error=True) # fixme get rid of tan if we keep this also incorporate 'weird'
 
 #slope_prior = "approx_grade_expon"
 slope_prior = "exact_grade_expon"
-def slope_logpdf(angle,weird=0):
+def grade_logpdf_f(grade):
     if slope_prior == "approx_grade_expon":
-        return approx_slope_logpdf(angle)
+        return approx_grade_logpdf(grade)
     if slope_prior == "exact_grade_expon":
-        return grade_logpdf(np.tan(angle/180*np.pi),weird=weird)
+        return grade_logpdf(grade)
     assert False
 
 max_coord_displacement=100 # todo take from command line, also interpolation array size
@@ -189,7 +203,8 @@ if use_dense_matrices:
 
 # test case for gradient priors
 
-if True:
+show_distributions = False
+if show_distributions:
     from matplotlib import pyplot as plt
     even_slope_equal_dists = np.array([1,2,3])
     uneven_slope_equal_dists = np.array([1,1,3])
@@ -199,24 +214,17 @@ if True:
     def slope_prior_test(heights,neighbour_distances):
         mean_segment_length = np.mean(neighbour_distances)
         neighbour_heightdiffs = np.diff(heights)
-        neighbour_angles = np.arctan(neighbour_heightdiffs/neighbour_distances)/np.pi*180
-        length_weighted_neighbour_likelihood = slope_logpdf(neighbour_angles)*neighbour_distances / mean_segment_length
+        length_weighted_neighbour_likelihood = grade_logpdf(neighbour_heightdiffs/neighbour_distances)*neighbour_distances / mean_segment_length
         return fsum(length_weighted_neighbour_likelihood)
         
     print (f"{slope_prior_test(even_slope_equal_dists,equal_dists)=}")
     print (f"{slope_prior_test(uneven_slope_equal_dists,equal_dists)=}")
     print (f"{slope_prior_test(even_slope_equal_dists,unequal_dists)=}")
     
-    grade = np.arange(1000)/100
-    #n = norm(scale=0.2).logpdf(grade)
-    gam = gamma(scale=grade_mean,a=1.199).pdf(grade)
-    weib = weibull_min(scale=grade_mean,c=1.01).pdf(grade)
-    e = slope_logpdf(np.arctan(grade)/np.pi*180,weird=0)
-    me = np.exp(slope_logpdf(np.arctan(grade)/np.pi*180,weird=12))
-    #plt.plot(grade,n,label="half normal")
-    plt.plot(grade,gam,label="gamma")
-    plt.plot(grade,weib,label="weib")
-    #plt.plot(grade,e,label="exp")
+    grade = np.arange(1000)/1000
+    e = my_exp_logpdf(grade)
+    me = grade_logpdf_f(grade)
+    plt.plot(grade,e,label="exp")
     plt.plot(grade,me,label="mine")
     plt.legend()
     plt.xlabel("x")
@@ -240,8 +248,7 @@ def minus_log_likelihood(point_offsets):
         all_heightdiffs = abs(zs[:, None] - zs[None, :])
         neighbour_heightdiffs = all_heightdiffs[np.nonzero(adjacency)]
         neighbour_distances = distances[np.nonzero(adjacency)] # not efficient
-        neighbour_angles = np.arctan(neighbour_heightdiffs/neighbour_distances)/np.pi*180 # fixme think we can get rid of tans again
-        length_weighted_neighbour_likelihood = slope_logpdf(neighbour_angles)*neighbour_distances / mean_segment_length
+        length_weighted_neighbour_likelihood = grade_logpdf_f(neighbour_heightdiffs/neighbour_distances)*neighbour_distances / mean_segment_length
         neighbour_likelihood = fsum(length_weighted_neighbour_likelihood)
     else:
         #the following lines are equivalent to computing the following only for neighbours:

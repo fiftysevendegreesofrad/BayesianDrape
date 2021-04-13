@@ -135,3 +135,4 @@ later: options to ordinary drape / 3d fix / decouple bridge links with interior 
 autocorr stats:
 scale of exp distribution for grades = 21.7
 scale of difference between neighbouring grades = 56.7
+but i'm going to abandon that for now on computational grounds.
