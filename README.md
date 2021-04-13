@@ -40,81 +40,10 @@ https://jiffyclub.github.io/snakeviz/
 python -m cProfile -s cumtime BayesianDrape.py  --JUST-LLTEST >tmp && head -n 60 tmp
 
 
-is my func broken? how to test when i've changed behaviour? add zeros back in, LLtest, rerun?
 
-ok there is a precision issue with func
-
-weirdly its fixed by the zero padding
-
-putting bounds back in causes opt fail (differt opt alg)
-
-right when did it work? not sure now :(
-
-if it helps with approximator i could put in a gradient outside the widest limit
-
-
-also i could revert to dense matrix + let optimizer run longer
-
-NOW QUITE NICE THOUGH COMPLAINS PRECISION LOSS
-
-try sparse again - very similar output
-
-COMPARE LLTEST SPARSE ZEROPAD/NON - very similar so sparse isn't the problem
-
-THEN TRY WITHOUT THE ZEROS AGAIN - LLTEST is vaguely similar not quite so much (numbers off by 1%), precision issue then?
-but everything i checked is float64 - including interpolator outputs
-
-use log neighbour grades?
-could it be that we get too close to neighbours?
-does this work with exact logpdf so i can rule that out for now? yes. keep using exact, but that's not the issue.
-
-noticable how it really likes making flat roads right now
-
-should i put lower limit on grade prior in case there are any super short distances messing us up? ok now done via return to slope as this also should fix any inverse distance/grade precision issues 
-
-it's stopped complaining about precision? though my results are middling. priors are kinda wrong?
-
-* if i go back to angles i should make a table again
-* still not using bounds
-* still not approximating gaussian prior
-* fix for sparse
-
-* if precision gets fixed maybe i can bring back inverse_distances
-
-
-now with the exponential approx grade prior translated to slope, it complains of precision again
-
-WTF the working one used slope = np.arctan(height,dist) !! not even a function! checkout and rerun testing types to be sure!
-ok so my convergence was based on a bug - fix this bug and precision issues return even with gaussian slope prior.
-
-***BUT WE KNOW THEY HAVE TO DO WITH SLOPE COMPUTATION OR PRIORS***
-
-trying to invent a precise arctan i didn't do any better than numpy (funny that)
-
-maybe make 2d slope prior - for short segments it shouldn't go nuts?
-
-but distances minimum in the test case is 0.5 so we don't have insane small values there. 
-
-np.sum always improves precision by pairwise add if no axis given. else python math.fsum may be worth a look but slow.
-
-msum and fsum. not sure which is faster but fsum is exact.
-or can we get a float128? not easily, if we can it may only be float64 underneath.
-
-
-testing sum - by replacing with fsum - is this the issue? no, still precision loss.
-
-VISUALISE PRIORS TO SANITY CHECK. MAYBE PREVIOUS BUGS (LIKE THE ZERO SUMMING) EFFECTIVELY CAUSED WEIRD PRIORS THAT MADE IT WORK OK. TWEAK PRIORS TO MAKE WORK?
-
-- THE BUGGY ARCTAN DISCARDED DISTANCE - COULD DISTANCE BE BETTER RECOMPUTED EACH TIME
-- THE BUGGY ZEROADD DISCARDED WHAT? WILL HAVE REDUCED INFLENCE OF ALL OTHER PRIORS. MAYBE ITS TRYING TO OPTIM TOO FAST? don't forget moving to differentiation is an option now.
-
-or is it not really a precision issue but a convergence one?
-
-WHEN DID WE GET THE REALLY NICE OUTPUT, WHAT WERE WE DOING?
+summing accuracy - i tried math.fsum which is exact, no difference and no need to use now. np.sum always improves precision by pairwise add if no axis given. everything in program is float64
 
 (bayesiandrape) D:\BayesianDrape>python -m cProfile -o profile.prof -s cumtime BayesianDrape.py --TERRAIN-INPUT=data/all_os50_terrain.tif --POLYLINE-INPUT=data/test_awkward_link.shp --OUTPUT=data/test_output.shp --SLOPE-PRIOR-STD=2.2 --SPATIAL-MISMATCH-PRIOR-STD=25
-
-
 
 Slope prior should be linear composable?  and length weighted. Discuss meaning of deviation from exp distribution. But what is right segment length? Autocorrelation? Adjacent segments in single point case?
 
@@ -122,13 +51,6 @@ Auto correlation of heights isn't much concern because each parameter only influ
 
 here's the argument: length weighting is a more useful model because it automatically gives smooth changes, you don't have to length weight but if you did you'd have to have a prior for gradient autocorr too. Length perfectly captures gradient autocorrelation in prediction of heights - but causes an autocorrelation problem versus the offset prior unless we normalize for average link length. :)
 
-first attempt at lenwt prior: definitely flattens it though still convergence issue and short steep slopes issue. maybe because i shouldn't approximate the slope prior - now testing. no difference.
-
-ok - maybe i should
-1. test case the height gain prior situation
-2. tweak height prior to prefer gradual gain. yes - this works - still complains about precision but if anything output is too smooth. suspect i should formally define and calibrate the prior.
-
-model as normal times exponential.
 
 later: options to ordinary drape / 3d fix / decouple bridge links with interior points being weighted average of exterior
 
