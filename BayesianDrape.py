@@ -89,7 +89,6 @@ net_df["point_indices"] = point_indices_all_rows # fixme what if column name exi
 num_points = len(all_points_set)
 print (f"{num_points=}")
 distances = lil_matrix((num_points,num_points))
-adjacency = lil_matrix((num_points,num_points),dtype=bool)
 for _,row in net_df.iterrows():
     xs,ys = row.geometry.coords.xy
     for point1,point2 in pairwise(zip(xs,ys)):
@@ -97,8 +96,9 @@ for _,row in net_df.iterrows():
         index2 = all_points_set.index(point2)
         assert index1!=index2
         (x1,y1),(x2,y2) = point1,point2
-        distances[index1,index2]=((x2-x1)**2+(y2-y1)**2)**0.5
-        adjacency[index1,index2]=True
+        dist = ((x2-x1)**2+(y2-y1)**2)**0.5
+        assert dist>0
+        distances[index1,index2]=dist
         # provided we optimize all points together, we don't store the reverse adjacency 
         # otherwise each gradient likelihood is counted twice, breaking log likelihood
         # if we did want to compute gradient for a single point, we should compute reverse adjacency and also halve all gradient log likelihoods
@@ -107,7 +107,7 @@ for _,row in net_df.iterrows():
 all_points = np.array(all_points_set)
 del all_points_set
 distances = distances.tocsr()
-adjacency = adjacency.tocsr()
+mean_segment_length = np.mean(distances.data)
 
 print (f"{distances.data.min()=}")
 
@@ -194,12 +194,16 @@ def sparse_diag(x):
     d.setdiag(x)
     return d.tocsr()
 
+inverse_distances = distances.copy()
+inverse_distances.data**=-1
+
 use_dense_matrices = (num_points<200)
 if use_dense_matrices: 
+    adjacency = np.zeros((num_points,num_points),bool)
+    adjacency[distances.nonzero()] = 1
     distances = distances.toarray()
-    adjacency = adjacency.toarray()
-    mean_segment_length = distances[np.nonzero(adjacency)].mean() 
-    print (f"{mean_segment_length=}")
+    
+print (f"{mean_segment_length=}")
 
 # test case for gradient priors
 
@@ -237,6 +241,8 @@ if show_distributions:
 
 llcount=0
 
+
+
 def minus_log_likelihood(point_offsets):
     global llcount
     llcount += 1
@@ -248,18 +254,16 @@ def minus_log_likelihood(point_offsets):
         all_heightdiffs = abs(zs[:, None] - zs[None, :])
         neighbour_heightdiffs = all_heightdiffs[np.nonzero(adjacency)]
         neighbour_distances = distances[np.nonzero(adjacency)] # not efficient
-        length_weighted_neighbour_likelihood = grade_logpdf_f(neighbour_heightdiffs/neighbour_distances)*neighbour_distances / mean_segment_length
-        neighbour_likelihood = fsum(length_weighted_neighbour_likelihood)
+        neighbour_grades = neighbour_heightdiffs/neighbour_distances
     else:
-        #the following lines are equivalent to computing the following only for neighbours:
-        #neighbour_grades = inverse_distances * abs(zs[:, None] - zs[None, :]) 
-        #i.e. computing change in height divided by distance for all neighbours
-        #(conveniently, for non-neighbours, inversedistance=1/inf=0 and they don't appear in the sparse matrix so are not computed)
-        # .data pulls out all explicit elements including explicit zeros in csr matrix
-        sdz = sparse_diag(zs)
-        neighbour_grades = abs((inverse_distances * sdz - sdz * inverse_distances).data) # nb * is now matrix mult. is there a name for a*b-b*a ?
-        neighbour_likelihood = grade_logpdf(neighbour_grades).sum()
+        n1s,n2s,neighbour_distances = scipy.sparse.find(distances) 
+        neighbour_inv_distances = np.asarray(inverse_distances[n1s,n2s])[0]
+        neighbour_heightdiffs = abs(zs[n1s]-zs[n2s]) 
+        neighbour_grades = neighbour_heightdiffs*neighbour_inv_distances
 
+    length_weighted_neighbour_likelihood = grade_logpdf_f(neighbour_grades)*neighbour_distances / mean_segment_length
+    neighbour_likelihood = fsum(length_weighted_neighbour_likelihood)
+    
     offset_square_distances = ((point_offsets**2).sum(axis=1))
     offset_likelihood = fsum(approx_squareoffset_logpdff(offset_square_distances))
     return -(neighbour_likelihood+offset_likelihood)
@@ -283,7 +287,7 @@ if options.just_lltest:
     
     for i in range(num_points):
         offset_unit_vector[i]=np.array([(i//3)%3,i%3])-1
-    original_lls = [29233.79119917465, 29869.792894256196, 30479.836034098767, 31233.911375847896, 32133.64223632107]
+    original_lls = [579.0005179822034, 593.3853491831526, 629.0507280920274, 688.2552177220412, 783.620327462738]
     new_lls = []
     for i,oll in enumerate(original_lls):
         ll = minus_log_likelihood(offset_unit_vector*i)
