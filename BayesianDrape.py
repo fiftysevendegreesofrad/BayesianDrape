@@ -23,7 +23,6 @@ from ordered_set import OrderedSet
 from itertools import tee,combinations
 from shapely.geometry import LineString
 import sys
-from math import fsum
 
 def pairwise(iterable):
     "s -> (s0,s1), (s1,s2), (s2, s3), ..."
@@ -173,12 +172,12 @@ def grade_logpdf_f(grade):
 
 max_coord_displacement=100 # todo take from command line, also interpolation array size
 max_displacement = (2**0.5) * max_coord_displacement
-dist_range = np.arange(100)/20*max_displacement # 20 was a bug but possibly what made it work as it extends approximation beyond max_coord_displacement
+dist_range = np.arange(100)/100*max_displacement 
 offset_logpdf = norm(scale=options.mismatch_prior_std).logpdf
 approx_squareoffset_logpdf = interp1d(dist_range**2,offset_logpdf(dist_range),bounds_error=True,fill_value=-np.inf) # doing this reduced looking up normal pdf from 35% to 10% of runtime of minus_log_likelihood
 
 # wrap interpolators in functions for profiling stats
-approximate_offset_prior = False
+approximate_offset_prior = True
 def approx_squareoffset_logpdff(x):
     if approximate_offset_prior:
         return approx_squareoffset_logpdf(x)
@@ -219,7 +218,7 @@ if show_distributions:
         mean_segment_length = np.mean(neighbour_distances)
         neighbour_heightdiffs = np.diff(heights)
         length_weighted_neighbour_likelihood = grade_logpdf(neighbour_heightdiffs/neighbour_distances)*neighbour_distances / mean_segment_length
-        return fsum(length_weighted_neighbour_likelihood)
+        return length_weighted_neighbour_likelihood.sum()
         
     print (f"{slope_prior_test(even_slope_equal_dists,equal_dists)=}")
     print (f"{slope_prior_test(uneven_slope_equal_dists,equal_dists)=}")
@@ -262,10 +261,10 @@ def minus_log_likelihood(point_offsets):
         neighbour_grades = neighbour_heightdiffs*neighbour_inv_distances
 
     length_weighted_neighbour_likelihood = grade_logpdf_f(neighbour_grades)*neighbour_distances / mean_segment_length
-    neighbour_likelihood = fsum(length_weighted_neighbour_likelihood)
+    neighbour_likelihood = length_weighted_neighbour_likelihood.sum()
     
     offset_square_distances = ((point_offsets**2).sum(axis=1))
-    offset_likelihood = fsum(approx_squareoffset_logpdff(offset_square_distances))
+    offset_likelihood = approx_squareoffset_logpdff(offset_square_distances).sum()
     return -(neighbour_likelihood+offset_likelihood)
 
 # Test function

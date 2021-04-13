@@ -114,7 +114,7 @@ WHEN DID WE GET THE REALLY NICE OUTPUT, WHAT WERE WE DOING?
 
 (bayesiandrape) D:\BayesianDrape>python -m cProfile -o profile.prof -s cumtime BayesianDrape.py --TERRAIN-INPUT=data/all_os50_terrain.tif --POLYLINE-INPUT=data/test_awkward_link.shp --OUTPUT=data/test_output.shp --SLOPE-PRIOR-STD=2.2 --SPATIAL-MISMATCH-PRIOR-STD=25
 
-oddnesses: not using bounds, not approximating gaussian prior
+
 
 Slope prior should be linear composable?  and length weighted. Discuss meaning of deviation from exp distribution. But what is right segment length? Autocorrelation? Adjacent segments in single point case?
 
@@ -136,3 +136,11 @@ autocorr stats:
 scale of exp distribution for grades = 21.7
 scale of difference between neighbouring grades = 56.7
 but i'm going to abandon that for now on computational grounds.
+
+
+profiling now
+25% terrain interpolator
+20% fsum
+20% sparse find
+20% gaussian pdf
+...ditching fsum, exact gauss (tested it still works on awkward link). 
