@@ -169,22 +169,6 @@ k = -np.log(sigma)-0.5*np.log(2*np.pi)
 def squareoffset_logpdf(x):
     return k-(x/sigma_sq)/2 
         
-
-
-
-n1s,n2s,neighbour_distances = scipy.sparse.find(distances) 
-neighbour_inv_distances = np.asarray(distances[n1s,n2s])[0]**-1
-
-use_dense_matrices = (num_points<200)
-if use_dense_matrices: 
-    print ("Using DENSE matrices")
-    adjacency = np.zeros((num_points,num_points),bool)
-    adjacency[distances.nonzero()] = 1
-    distances = distances.toarray()
-    neighbour_distances = distances[np.nonzero(adjacency)] # not efficient
-else:
-    print ("Using SPARSE matrices")
-    
 print (f"{mean_segment_length=}")
 
 # test case for gradient priors
@@ -221,30 +205,29 @@ if show_distributions:
 
 # Define posterior log likelihood
 
+n1s,n2s,neighbour_distances = scipy.sparse.find(distances)
+neighbour_weights = neighbour_distances / mean_segment_length
+neighbour_inv_distances = np.asarray(distances[n1s,n2s])[0]**-1
+del distances
+del neighbour_distances
+
 llcount=0
-
-
 
 def minus_log_likelihood(point_offsets):
     global llcount
     llcount += 1
     point_offsets = point_offsets.reshape(all_points.shape) # as optimize flattens point_offsets
     points_to_interpolate = all_points + point_offsets
-    zs = terrain_interpolator(points_to_interpolate)
-    
-    if use_dense_matrices:
-        all_heightdiffs = abs(zs[:, None] - zs[None, :])
-        neighbour_heightdiffs = all_heightdiffs[np.nonzero(adjacency)]
-        neighbour_grades = neighbour_heightdiffs/neighbour_distances
-    else:
-        neighbour_heightdiffs = abs(zs[n1s]-zs[n2s]) 
-        neighbour_grades = neighbour_heightdiffs*neighbour_inv_distances
 
-    length_weighted_neighbour_likelihood = grade_logpdf(neighbour_grades)*neighbour_distances / mean_segment_length
+    zs = terrain_interpolator(points_to_interpolate)
+    neighbour_heightdiffs = abs(zs[n1s]-zs[n2s]) 
+    neighbour_grades = neighbour_heightdiffs*neighbour_inv_distances
+    length_weighted_neighbour_likelihood = grade_logpdf(neighbour_grades)*neighbour_weights
     neighbour_likelihood = length_weighted_neighbour_likelihood.sum()
     
     offset_square_distances = ((point_offsets**2).sum(axis=1))
     offset_likelihood = squareoffset_logpdf(offset_square_distances).sum()
+
     return -(neighbour_likelihood+offset_likelihood)
 
 minus_log_likelihood_gradient = grad(minus_log_likelihood)
@@ -254,7 +237,7 @@ minus_log_likelihood_gradient = grad(minus_log_likelihood)
 if options.just_lltest:
     print ("Beginning LL test")
     offset_unit_vector = np.zeros((num_points,2),float)
-    print(f"{minus_log_likelihood_gradient(offset_unit_vector)=}")
+    #print(f"{minus_log_likelihood_gradient(offset_unit_vector)=}")
     from timeit import Timer
     ncalls = 1
     nrepeats = 1
@@ -268,7 +251,7 @@ if options.just_lltest:
     
     for i in range(num_points):
         offset_unit_vector[i]=np.array([(i//3)%3,i%3])-1
-    original_lls = [579.0005179822034, 593.3853491831526, 629.0507280920274, 688.2552177220412, 783.620327462738]
+    original_lls = [579.0005179822035, 593.3853491831524, 629.0507280920275, 688.2552177220413, 783.6203274627378]
     new_lls = []
     for i,oll in enumerate(original_lls):
         ll = minus_log_likelihood(offset_unit_vector*i)
@@ -295,7 +278,7 @@ last_ll = initial_log_likelihood
 # Bounds are needed to stop the optimizer wandering beyond the furthest approximated distance of the offset prior, which becomes flat at that point
 bounds = Bounds(-options.mismatch_max,options.mismatch_max) 
 print ("Starting optimizer")
-# setting maxiter=20 is better than nothing but doesn't give ideal results on awkward link
+# setting maxiter=200 gives nice results but can we do better? fixme
 result = minimize(minus_log_likelihood,init_guess,callback = callback,bounds=bounds,jac=minus_log_likelihood_gradient,options=dict(maxiter=200)) 
 print (f"Finished optimizing: {result['success']=} {result['message']}")
 final_offsets = result["x"].reshape(all_points.shape)
