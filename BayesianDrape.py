@@ -36,6 +36,8 @@ op.add_option("--POLYLINE-INPUT",dest="shapefile",help="[REQUIRED] Polyline feat
 op.add_option("--OUTPUT",dest="outfile",help="[REQUIRED] Output feature class",metavar="FILE")
 op.add_option("--SLOPE-PRIOR-SCALE",dest="slope_prior_std",help="[REQUIRED] Scale of exponential prior for path slope (equivalent to mean slope)",metavar="ANGLE_IN_DEGREES",type="float")
 op.add_option("--SPATIAL-MISMATCH-PRIOR-STD",dest="mismatch_prior_std",help="[REQUIRED] Standard deviation of zero-centred Gaussian prior for spatial mismatch (in spatial units of projection)",metavar="DISTANCE",type="float")
+op.add_option("--SPATIAL-MISMATCH-MAX",dest="mismatch_max",help="Maximum permissible spatial mismatch (in spatial units of projection; defaults to 4x mismatch prior std)",metavar="DISTANCE",type="float")
+op.add_option("--SPATIAL-MISMATCH-PRIOR-APPROX-SAMPLES",dest="offset_prior_approx_samples",help="Number of samples per dimension for approximating spatial mismatch prior",metavar="N",type="int",default=100)
 op.add_option("--SLOPE-CONTINUITY-PARAM",dest="slope_continuity",help="Slope continuity parameter",metavar="X",type="float",default=0.38)
 op.add_option("--JUST-LLTEST",dest="just_lltest",action="store_true",help="Test mode")
 op.add_option("--GRADIENT-NEIGHBOUR-DIFFERENCE-OUTPUT",dest="grad_neighbour_diff_file",help="Output for distribution of neighbour gradient differences (for computing autocorrelation)",metavar="FILE")
@@ -170,9 +172,13 @@ def grade_logpdf_f(grade):
         return grade_logpdf(grade)
     assert False
 
-max_coord_displacement=100 # todo take from command line, also interpolation array size
+if options.mismatch_max:
+    max_coord_displacement=mismatch_max
+else:
+    max_coord_displacement=4*options.mismatch_prior_std
+    
 max_displacement = (2**0.5) * max_coord_displacement
-dist_range = np.arange(100)/100*max_displacement 
+dist_range = np.arange(options.offset_prior_approx_samples)/options.offset_prior_approx_samples*max_displacement 
 offset_logpdf = norm(scale=options.mismatch_prior_std).logpdf
 approx_squareoffset_logpdf = interp1d(dist_range**2,offset_logpdf(dist_range),bounds_error=True,fill_value=-np.inf) # doing this reduced looking up normal pdf from 35% to 10% of runtime of minus_log_likelihood
 
