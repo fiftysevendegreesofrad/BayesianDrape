@@ -310,7 +310,7 @@ last_ll = initial_log_likelihood
 # Bounds are needed to stop the optimizer wandering beyond the furthest approximated distance of the offset prior, which becomes flat at that point
 bounds = Bounds(-max_coord_displacement,max_coord_displacement) # not used currently as bounds optimizer not working
 print ("Starting optimizer")
-result = minimize(minus_log_likelihood,init_guess,callback = callback) 
+result = minimize(minus_log_likelihood,init_guess,callback = callback,bounds=bounds,options=dict(maxfun=100000,maxiter=np.inf)) 
 print (f"Finished optimizing: {result['success']=} {result['message']}")
 final_offsets = result["x"].reshape(all_points.shape)
 final_points = all_points + final_offsets
