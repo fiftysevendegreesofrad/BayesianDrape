@@ -113,3 +113,25 @@ or is it not really a precision issue but a convergence one?
 WHEN DID WE GET THE REALLY NICE OUTPUT, WHAT WERE WE DOING?
 
 (bayesiandrape) D:\BayesianDrape>python -m cProfile -o profile.prof -s cumtime BayesianDrape.py --TERRAIN-INPUT=data/all_os50_terrain.tif --POLYLINE-INPUT=data/test_awkward_link.shp --OUTPUT=data/test_output.shp --SLOPE-PRIOR-STD=2.2 --SPATIAL-MISMATCH-PRIOR-STD=25
+
+oddnesses: not using bounds, not approximating gaussian prior
+
+Slope prior should be linear composable?  and length weighted. Discuss meaning of deviation from exp distribution. But what is right segment length? Autocorrelation? Adjacent segments in single point case?
+
+Auto correlation of heights isn't much concern because each parameter only influences 1 height mainly. Is this a general finding?
+
+here's the argument: length weighting is a more useful model because it automatically gives smooth changes, you don't have to length weight but if you did you'd have to have a prior for gradient autocorr too. Length perfectly captures gradient autocorrelation in prediction of heights - but causes an autocorrelation problem versus the offset prior unless we normalize for average link length. :)
+
+first attempt at lenwt prior: definitely flattens it though still convergence issue and short steep slopes issue. maybe because i shouldn't approximate the slope prior - now testing. no difference.
+
+ok - maybe i should
+1. test case the height gain prior situation
+2. tweak height prior to prefer gradual gain. yes - this works - still complains about precision but if anything output is too smooth. suspect i should formally define and calibrate the prior.
+
+model as normal times exponential.
+
+later: options to ordinary drape / 3d fix / decouple bridge links with interior points being weighted average of exterior
+
+autocorr stats:
+scale of exp distribution for grades = 21.7
+scale of difference between neighbouring grades = 56.7

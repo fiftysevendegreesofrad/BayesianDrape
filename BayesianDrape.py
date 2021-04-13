@@ -10,7 +10,7 @@ from optparse import OptionParser
 import rioxarray # gdal raster is another option should this give trouble though both interpolate with scipy underneath
 from xarray import DataArray
 from scipy.optimize import minimize,Bounds
-from scipy.stats import norm,expon,describe
+from scipy.stats import norm,expon,describe,gamma,weibull_min
 from scipy.spatial import distance_matrix
 import scipy.sparse
 from scipy.sparse import lil_matrix,coo_matrix
@@ -19,7 +19,7 @@ import geopandas as gp
 import pandas as pd
 import numpy as np
 from ordered_set import OrderedSet
-from itertools import tee
+from itertools import tee,combinations
 from shapely.geometry import LineString
 import sys
 from math import fsum
@@ -37,14 +37,10 @@ op.add_option("--OUTPUT",dest="outfile",help="[REQUIRED] Output feature class",m
 op.add_option("--SLOPE-PRIOR-STD",dest="slope_prior_std",help="[REQUIRED] Standard deviation of zero-centred prior for path slope",metavar="ANGLE_IN_DEGREES",type="float")
 op.add_option("--SPATIAL-MISMATCH-PRIOR-STD",dest="mismatch_prior_std",help="[REQUIRED] Standard deviation of zero-centred prior for spatial mismatch (in spatial units of projection)",metavar="DISTANCE",type="float")
 op.add_option("--JUST-LLTEST",dest="just_lltest",action="store_true",help="Test mode")
+op.add_option("--GRADIENT-NEIGHBOUR-DIFFERENCE-OUTPUT",dest="grad_neighbour_diff_file",help="Output for distribution of neighbour gradient differences (for computing autocorrelation)",metavar="FILE")
 (options,args) = op.parse_args()
 
-if options.just_lltest:
-    options.terrainfile = "data/all_os50_terrain.tif"
-    #options.shapefile = "data/test_awkward_link.shp"
-    options.slope_prior_std = 2.2
-    options.mismatch_prior_std = 25
-else:
+if not options.just_lltest:
     missing_options = []
     for option in op.option_list:
         if option.help.startswith(r'[REQUIRED]') and eval('options.' + option.dest) == None:
@@ -112,14 +108,39 @@ adjacency = adjacency.tocsr()
 
 print (f"{distances.data.min()=}")
 
+# Compute slope autocorr distribution
+# fixme if std not provided for autocorr, do this efficiently and estimate distribution as appropriate
+
+if options.grad_neighbour_diff_file:
+    neighbour_grade_diffs = []
+    one_side_grade = []
+    zs = terrain_interpolator(all_points)
+    # for each pair of neighbour segments compute difference in slope
+    # ...to get neighbour segment pairs, iterate through points, taking combinations for each
+    symmetric_distances = distances + distances.T
+    for row_idx in range(num_points):
+        a,b,d = scipy.sparse.find(symmetric_distances.getrow(row_idx))
+        assert np.all(a==0) # redundant index in a single row result
+        neighbours = zip(b,d)
+        for (idx1,d1),(idx2,d2) in combinations(neighbours,2):
+            h1 = zs[idx1]
+            h2 = zs[idx2]
+            h0 = zs[row_idx]
+            g1 = abs(h1-h0)/d1
+            g2 = abs(h2-h0)/d2
+            neighbour_grade_diffs.append(abs(g1-g2))
+            one_side_grade.append(g1)
+    pd.DataFrame.from_dict({"grade_diff":neighbour_grade_diffs,"one_side_grade":one_side_grade}).to_csv(options.grad_neighbour_diff_file)
+    sys.exit(0)
+    
 # Define priors
 
 # Exponential grade prior - though we convert to a slope prior for precision reasons
 grade_mean = np.tan(options.slope_prior_std*np.pi/180)
 grade_exp_dist_lambda = 1/grade_mean
 log_grade_exp_dist_lambda = np.log(grade_exp_dist_lambda)
-def grade_logpdf(grade):
-    return log_grade_exp_dist_lambda - grade_exp_dist_lambda*grade
+def grade_logpdf(grade,weird=0):
+    return log_grade_exp_dist_lambda - grade_exp_dist_lambda*grade + weird*(-np.exp(-grade) + 1)
     
 slope_angle_range = np.arange(901)/10 # fixme could be more canny with spacing to speed up if needed
 slope_pdf_interp_points = grade_logpdf(np.tan(slope_angle_range/180*np.pi))
@@ -127,10 +148,13 @@ slope_pdf_interp_points[-1] = slope_pdf_interp_points[-2]*2 # fill last value to
 # fixme can i approximate the tan without precision issues? yes quite possibly, from gradient, as that happened before. only if profiler indicates an issue though and it makes problems outside last interp point
 approx_slope_logpdf = interp1d(slope_angle_range,slope_pdf_interp_points,bounds_error=True) 
 
-slope_prior = "approx_grade_expon"
-def slope_logpdf(angle):
+#slope_prior = "approx_grade_expon"
+slope_prior = "exact_grade_expon"
+def slope_logpdf(angle,weird=0):
     if slope_prior == "approx_grade_expon":
         return approx_slope_logpdf(angle)
+    if slope_prior == "exact_grade_expon":
+        return grade_logpdf(np.tan(angle/180*np.pi),weird=weird)
     assert False
 
 max_coord_displacement=100 # todo take from command line, also interpolation array size
@@ -160,6 +184,46 @@ use_dense_matrices = (num_points<200)
 if use_dense_matrices: 
     distances = distances.toarray()
     adjacency = adjacency.toarray()
+    mean_segment_length = distances[np.nonzero(adjacency)].mean() 
+    print (f"{mean_segment_length=}")
+
+# test case for gradient priors
+
+if True:
+    from matplotlib import pyplot as plt
+    even_slope_equal_dists = np.array([1,2,3])
+    uneven_slope_equal_dists = np.array([1,1,3])
+    equal_dists = np.array([1,1])
+    unequal_dists = np.array([0.5,1.5])
+
+    def slope_prior_test(heights,neighbour_distances):
+        mean_segment_length = np.mean(neighbour_distances)
+        neighbour_heightdiffs = np.diff(heights)
+        neighbour_angles = np.arctan(neighbour_heightdiffs/neighbour_distances)/np.pi*180
+        length_weighted_neighbour_likelihood = slope_logpdf(neighbour_angles)*neighbour_distances / mean_segment_length
+        return fsum(length_weighted_neighbour_likelihood)
+        
+    print (f"{slope_prior_test(even_slope_equal_dists,equal_dists)=}")
+    print (f"{slope_prior_test(uneven_slope_equal_dists,equal_dists)=}")
+    print (f"{slope_prior_test(even_slope_equal_dists,unequal_dists)=}")
+    
+    grade = np.arange(1000)/100
+    #n = norm(scale=0.2).logpdf(grade)
+    gam = gamma(scale=grade_mean,a=1.199).pdf(grade)
+    weib = weibull_min(scale=grade_mean,c=1.01).pdf(grade)
+    e = slope_logpdf(np.arctan(grade)/np.pi*180,weird=0)
+    me = np.exp(slope_logpdf(np.arctan(grade)/np.pi*180,weird=12))
+    #plt.plot(grade,n,label="half normal")
+    plt.plot(grade,gam,label="gamma")
+    plt.plot(grade,weib,label="weib")
+    #plt.plot(grade,e,label="exp")
+    plt.plot(grade,me,label="mine")
+    plt.legend()
+    plt.xlabel("x")
+    plt.ylabel("logpdf")
+    plt.show()
+    
+    sys.exit(0)
 
 # Define posterior log likelihood
 
@@ -175,9 +239,10 @@ def minus_log_likelihood(point_offsets):
     if use_dense_matrices:
         all_heightdiffs = abs(zs[:, None] - zs[None, :])
         neighbour_heightdiffs = all_heightdiffs[np.nonzero(adjacency)]
-        neighbour_distances = distances[np.nonzero(adjacency)]
-        neighbour_angles = np.arctan(neighbour_heightdiffs/neighbour_distances)/np.pi*180
-        neighbour_likelihood = fsum(slope_logpdf(neighbour_angles))
+        neighbour_distances = distances[np.nonzero(adjacency)] # not efficient
+        neighbour_angles = np.arctan(neighbour_heightdiffs/neighbour_distances)/np.pi*180 # fixme think we can get rid of tans again
+        length_weighted_neighbour_likelihood = slope_logpdf(neighbour_angles)*neighbour_distances / mean_segment_length
+        neighbour_likelihood = fsum(length_weighted_neighbour_likelihood)
     else:
         #the following lines are equivalent to computing the following only for neighbours:
         #neighbour_grades = inverse_distances * abs(zs[:, None] - zs[None, :]) 
