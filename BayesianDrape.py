@@ -7,7 +7,7 @@
 """
 
 from optparse import OptionParser
-import rioxarray # gdal raster is another option should this give trouble though both interpolate with scipy underneath
+import rioxarray # gdal raster is another option 
 from xarray import DataArray
 from scipy.optimize import minimize,Bounds
 from scipy.stats import norm,expon,describe
@@ -18,10 +18,6 @@ from scipy.sparse import lil_matrix,coo_matrix
 from scipy.interpolate import RegularGridInterpolator
 import geopandas as gp
 import pandas as pd
-#from jax.config import config
-#config.update("jax_enable_x64", True)
-#import jax
-#import jax.numpy as np
 import autograd.numpy as np
 from autograd import grad
 from ordered_set import OrderedSet
@@ -67,7 +63,7 @@ print (f"{net_df.crs=}\nterrain raster crs??")
 
 terrain_xs = np.array(terrain_raster.x,np.float64)
 terrain_ys = np.flip(np.array(terrain_raster.y,np.float64)) 
-terrain_data = np.flip(terrain_raster.data[0],axis=0).T # fixme correct?
+terrain_data = np.flip(terrain_raster.data[0],axis=0).T # fixme does this generalize to other projections?
 terrain_interpolator = RegularGridInterpolator((terrain_xs,terrain_ys), terrain_data)
 del terrain_xs, terrain_ys, terrain_data, terrain_raster
 
@@ -92,8 +88,10 @@ for _,row in net_df.iterrows():
     point_indices_all_rows.append(point_indices)
 net_df["point_indices"] = point_indices_all_rows # fixme what if column name exists already?
 
-# Build point inverse distance matrix and adjacency matrix
-
+# Build point inverse distance matrix which also serves as adjacency matrix
+# provided we optimize all points together, we only store distances in one direction
+# otherwise each gradient likelihood is counted twice, which breaks log likelihood
+# if we did ever want to compute log likelihood for a single point, we would need a symmetric distance matrix
 num_points = len(all_points_set)
 print (f"{num_points=}")
 distances = lil_matrix((num_points,num_points))
@@ -107,10 +105,6 @@ for _,row in net_df.iterrows():
         dist = ((x2-x1)**2+(y2-y1)**2)**0.5
         assert dist>0
         distances[index1,index2]=dist
-        # provided we optimize all points together, we don't store the reverse adjacency 
-        # otherwise each gradient likelihood is counted twice, breaking log likelihood
-        # if we did want to compute gradient for a single point, we should compute reverse adjacency and also halve all gradient log likelihoods
-        # adjacency[index2,index1]=True 
         
 all_points = np.array(all_points_set)
 del all_points_set
@@ -143,7 +137,7 @@ if options.grad_neighbour_diff_file:
     pd.DataFrame.from_dict({"grade_diff":neighbour_grade_diffs,"one_side_grade":one_side_grade}).to_csv(options.grad_neighbour_diff_file)
     sys.exit(0)
     
-# Define priors
+# Define priors - both implemented by hand for speed and compatibility with autodiff
 
 # Exponential grade prior - though we convert to a slope prior for precision reasons
 grade_mean = np.tan(options.slope_prior_std*np.pi/180)
@@ -159,10 +153,7 @@ log_normalizing_constant = -np.log ( ( np.pi**0.5 * np.exp( grade_exp_dist_lambd
 def grade_logpdf(grade):
     return log_normalizing_constant - grade_exp_dist_lambda*grade - sc*grade**2 
 
-print (f"{my_exp_logpdf(0)=}")
-print (f"{grade_exp_dist_lambda=}")
-print (f"{grade_logpdf(0)=}")
-
+# 2d Gaussian offset prior
 sigma = options.mismatch_prior_std
 sigma_sq = sigma**2
 k = -np.log(sigma)-0.5*np.log(2*np.pi)
@@ -237,17 +228,11 @@ minus_log_likelihood_gradient = grad(minus_log_likelihood)
 if options.just_lltest:
     print ("Beginning LL test")
     offset_unit_vector = np.zeros((num_points,2),float)
-    #print(f"{minus_log_likelihood_gradient(offset_unit_vector)=}")
     from timeit import Timer
     ncalls = 1
     nrepeats = 1
-    t = Timer(lambda: minus_log_likelihood(offset_unit_vector))
-    print("Current impl time:",min(t.repeat(number=ncalls,repeat=nrepeats)))
-    # if hasattr(adjacency,"toarray"):
-        # nonsparse_adj = adjacency.toarray()
-        # t = Timer(lambda: minus_log_likelihood(offset_unit_vector,adjacency=nonsparse_adj))
-        # print("Nonsparse time:",min(t.repeat(number=ncalls,repeat=nrepeats)))
-    
+    t = Timer(lambda: minus_log_likelihood_gradient(offset_unit_vector))
+    print("Current gradient time:",min(t.repeat(number=ncalls,repeat=nrepeats)))
     
     for i in range(num_points):
         offset_unit_vector[i]=np.array([(i//3)%3,i%3])-1
@@ -275,7 +260,6 @@ def callback(x):
 init_guess = np.zeros((num_points*2),float)
 initial_log_likelihood = -minus_log_likelihood(init_guess)
 last_ll = initial_log_likelihood
-# Bounds are needed to stop the optimizer wandering beyond the furthest approximated distance of the offset prior, which becomes flat at that point
 bounds = Bounds(-options.mismatch_max,options.mismatch_max) 
 print ("Starting optimizer")
 # setting maxiter=200 gives nice results but can we do better? fixme
@@ -294,11 +278,11 @@ max_offset_dist = offset_distances.max()
 print (f"{initial_log_likelihood=}\n{final_log_likelihood=}\n{mean_offset_dist=}\n{max_offset_dist=}")
 
 # Reconstruct geometries
+print ("Reconstructing geometries")
 xs = all_points[:,0]
 ys = all_points[:,1]
 net_df.geometry = net_df.apply(lambda row: LineString([(xs[pt_index],ys[pt_index],optimal_zs[pt_index]) for pt_index in row.point_indices]),axis=1)
 del net_df["point_indices"]
 
-# Write output
- 
+print (f"Writing output to {options.outfile}") 
 net_df.to_file(options.outfile)
