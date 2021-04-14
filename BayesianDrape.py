@@ -226,7 +226,9 @@ def minus_log_likelihood(point_offsets):
     point_offsets = torch.reshape(point_offsets,all_points.shape) # as optimize flattens point_offsets
     points_to_interpolate = all_points + point_offsets
 
-    zs = terrain_interpolator([points_to_interpolate[:,0],points_to_interpolate[:,1]])
+    # calling contiguous() silences the performance warning from PyTorch
+    # swapping dimensions on our definition of point_offsets, and ensuring all tensors are created contiguous, gives maybe 10% speed boost - reverting for now as that's premature
+    zs = terrain_interpolator([points_to_interpolate[:,0].contiguous(),points_to_interpolate[:,1].contiguous()])
     neighbour_heightdiffs = abs(zs[n1s]-zs[n2s]) 
     neighbour_grades = neighbour_heightdiffs*neighbour_inv_distances
     length_weighted_neighbour_likelihood = grade_logpdf(neighbour_grades)*neighbour_weights
@@ -251,7 +253,7 @@ if options.just_lltest:
     offset_unit_vector = np.zeros((num_points,2),float)
     grad_test_input = torch.flatten(np_to_torch(offset_unit_vector))
     from timeit import Timer
-    ncalls = 20
+    ncalls = 100
     nrepeats = 5
     
     if options.shapefile=="data/test_awkward_link.shp":
@@ -288,7 +290,7 @@ if options.just_lltest:
 
 def callback(x):
     global llcount,last_ll,result
-    ll = -minus_log_likelihood(x)
+    ll = float(-minus_log_likelihood(x))
     lldiff = abs(ll-last_ll)
     last_ll = ll
     print (f"callback {llcount=} {ll=} {lldiff=}")

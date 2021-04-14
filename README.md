@@ -68,13 +68,11 @@ https://pytorch.org/docs/0.3.1/torch.html#torch.index_select
 Torch has its own optimizer should we use it? potentially yes to keep all the optim tensors on gpu only
 https://github.com/sbarratt/torch_interpolations
 
-before torch: gradient takes 17.2. After, 0.54 - and not on gpu yet!
+before torch: biggertest gradient takes 17.2. 
 
-after torch even biggertest takes 0.0076 for gradient! increasing ncalls so its now 0.17
+after torch even biggertest takes 0.008 (2000x speed) for gradient and it's not on gpu yet! increasing ncalls so its now 0.88
 
 later: can i include torch_interpolations in yaml? or just add to my own repo
-
-C:\Users\Crispin\Anaconda2\envs\bayesiandrape\lib\site-packages\torch_interpolations-0.1-py3.9.egg\torch_interpolations\multilinear.py:39: UserWarning: input value tensor is non-contiguous, this will lower the performance due to extra data copy when converting non-contiguous tensor to contiguous, please use contiguous input value tensor if possible (Triggered internally at  ..\aten\src\ATen/native/BucketizationUtils.h:20.)
 
 sounds like i can get working on laptop if i recompile from source:
 https://github.com/pytorch/pytorch/issues/31285
