@@ -30,7 +30,8 @@ def pairwise(iterable):
     a, b = tee(iterable)
     next(b, None)
     return zip(a, b)
-    
+
+slope_continuity_param_default = 0.38    
 op = OptionParser()
 op.add_option("--TERRAIN-INPUT",dest="terrainfile",help="[REQUIRED] Terrain model",metavar="FILE")
 op.add_option("--POLYLINE-INPUT",dest="shapefile",help="[REQUIRED] Polyline feature class e.g. network or GPS trace",metavar="FILE")
@@ -38,12 +39,11 @@ op.add_option("--OUTPUT",dest="outfile",help="[REQUIRED] Output feature class",m
 op.add_option("--SLOPE-PRIOR-SCALE",dest="slope_prior_scale",help="[REQUIRED] Scale of exponential prior for path slope (equivalent to mean slope)",metavar="ANGLE_IN_DEGREES",type="float")
 op.add_option("--SPATIAL-MISMATCH-PRIOR-STD",dest="mismatch_prior_std",help="[REQUIRED] Standard deviation of zero-centred Gaussian prior for spatial mismatch (in spatial units of projection)",metavar="DISTANCE",type="float")
 op.add_option("--SPATIAL-MISMATCH-MAX",dest="mismatch_max",help="Maximum permissible spatial mismatch (in spatial units of projection; defaults to 4x mismatch prior std)",metavar="DISTANCE",type="float")
-op.add_option("--SLOPE-CONTINUITY-PARAM",dest="slope_continuity",help="Slope continuity parameter",metavar="X",type="float",default=0.38)
+op.add_option("--SLOPE-CONTINUITY-PARAM",dest="slope_continuity",help=f"Slope continuity parameter (defaults to {slope_continuity_param_default})",metavar="X",type="float",default=slope_continuity_param_default)
 op.add_option("--JUST-LLTEST",dest="just_lltest",action="store_true",help="Test mode")
-op.add_option("--GRADIENT-NEIGHBOUR-DIFFERENCE-OUTPUT",dest="grad_neighbour_diff_file",help="Output for distribution of neighbour gradient differences (for computing autocorrelation)",metavar="FILE")
 op.add_option("--GPU",dest="cuda",action="store_true",help="Enable GPU acceleration")
-op.add_option("--FIX-FIELD",dest="fixfield",help="Ordinary drape of features over terrain where true",metavar="FIELDNAME")
-op.add_option("--DECOUPLE-FIELD",dest="decouplefield",help="Decouple features from terrain where true (useful for bridges/tunnels)",metavar="FIELDNAME")
+op.add_option("--FIX-FIELD",dest="fixfield",help="Instead of estimating heights, perform ordinary drape of features over terrain where FIELDNAME=true",metavar="FIELDNAME")
+op.add_option("--DECOUPLE-FIELD",dest="decouplefield",help="Instead of estimating heights, decouple features from terrain where FIELDNAME=true (useful for bridges/tunnels)",metavar="FIELDNAME")
 
 (options,args) = op.parse_args()
 
