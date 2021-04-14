@@ -25,6 +25,15 @@ from shapely.geometry import LineString
 import sys
 import torch
 
+using_cuda = False # torch.cuda.is_available() - but doesn't work for me currently as old hardware
+if using_cuda:
+    torch.set_default_tensor_type(torch.cuda.DoubleTensor)
+    def np_to_torch(x):
+        return torch.from_numpy(x).cuda()
+else:
+    def np_to_torch(x):
+        return torch.from_numpy(x)
+
 def pairwise(iterable):
     "s -> (s0,s1), (s1,s2), (s2, s3), ..."
     a, b = tee(iterable)
@@ -61,9 +70,9 @@ terrain_raster = rioxarray.open_rasterio(options.terrainfile)
 print (f"{net_df.crs=}\nterrain raster crs??")
 # todo assert these projections are the same
 
-terrain_xs = torch.from_numpy(np.array(terrain_raster.x,np.float64))
-terrain_ys = torch.from_numpy(np.flip(np.array(terrain_raster.y,np.float64)).copy() )
-terrain_data = torch.from_numpy(np.flip(terrain_raster.data[0],axis=0).T.copy()) # fixme does this generalize to other projections?
+terrain_xs = np_to_torch(np.array(terrain_raster.x,np.float64))
+terrain_ys = np_to_torch(np.flip(np.array(terrain_raster.y,np.float64)).copy() )
+terrain_data = np_to_torch(np.flip(terrain_raster.data[0],axis=0).T.copy()) # fixme does this generalize to other projections?
 
 terrain_interpolator = RegularGridInterpolator((terrain_xs,terrain_ys), terrain_data)
 del terrain_xs, terrain_ys, terrain_data, terrain_raster
@@ -205,13 +214,13 @@ del neighbour_distances
 
 llcount=0
 
-all_points = torch.from_numpy(all_points)
-neighbour_inv_distances = torch.from_numpy(neighbour_inv_distances)
-neighbour_weights = torch.from_numpy(neighbour_weights)
+all_points = np_to_torch(all_points)
+neighbour_inv_distances = np_to_torch(neighbour_inv_distances)
+neighbour_weights = np_to_torch(neighbour_weights)
 
 def minus_log_likelihood(point_offsets):
     if not torch.is_tensor(point_offsets):
-        point_offsets = torch.from_numpy(point_offsets)
+        point_offsets = np_to_torch(point_offsets)
     global llcount
     llcount += 1
     point_offsets = torch.reshape(point_offsets,all_points.shape) # as optimize flattens point_offsets
@@ -230,7 +239,7 @@ def minus_log_likelihood(point_offsets):
 
 def minus_log_likelihood_gradient(point_offsets):
     if not torch.is_tensor(point_offsets):
-        point_offsets = torch.from_numpy(point_offsets)
+        point_offsets = np_to_torch(point_offsets)
     point_offsets.requires_grad = True
     minus_log_likelihood(point_offsets).backward()
     return point_offsets.grad
@@ -240,10 +249,10 @@ def minus_log_likelihood_gradient(point_offsets):
 if options.just_lltest:
     print ("Beginning LL test")
     offset_unit_vector = np.zeros((num_points,2),float)
-    grad_test_input = torch.flatten(torch.from_numpy(offset_unit_vector))
+    grad_test_input = torch.flatten(np_to_torch(offset_unit_vector))
     from timeit import Timer
-    ncalls = 1
-    nrepeats = 1
+    ncalls = 20
+    nrepeats = 5
     
     if options.shapefile=="data/test_awkward_link.shp":
         original_lls = [579.0005179822035, 593.3853491831525, 629.0507280920274, 688.2552177220412, 783.6203274627381]
@@ -258,7 +267,8 @@ if options.just_lltest:
     print (f"{minus_log_likelihood(grad_test_input)=}")
     
     print ("Old gradient[0]",old_gradient)
-    t = Timer(lambda: print("New gradient[0]",minus_log_likelihood_gradient(grad_test_input)[0:2].numpy()))
+    print("New gradient[0]",minus_log_likelihood_gradient(grad_test_input)[0:2].numpy())
+    t = Timer(lambda: minus_log_likelihood_gradient(grad_test_input))
     print("Current gradient time:",min(t.repeat(number=ncalls,repeat=nrepeats)))
     
     for i in range(num_points):
@@ -266,7 +276,7 @@ if options.just_lltest:
     
     new_lls = []
     for i,oll in enumerate(original_lls):
-        ll = float(minus_log_likelihood(torch.flatten(torch.from_numpy(offset_unit_vector*i))))
+        ll = float(minus_log_likelihood(torch.flatten(np_to_torch(offset_unit_vector*i))))
         new_lls.append(ll)
         passed=(ll==oll)
         print (f"{i=} {oll=} {ll=} {passed=}")
@@ -284,7 +294,7 @@ def callback(x):
     print (f"callback {llcount=} {ll=} {lldiff=}")
     llcount=0
     
-init_guess = torch.from_numpy(np.zeros((num_points*2),float))
+init_guess = np_to_torch(np.zeros((num_points*2),float))
 initial_log_likelihood = -minus_log_likelihood(init_guess)
 last_ll = initial_log_likelihood
 bounds = Bounds(-options.mismatch_max,options.mismatch_max) 

@@ -25,25 +25,16 @@ Sum:	859474.466267
 Mean:	2.446443
 Standard Deviation:	2.221301
 
-Will need to check for precision issues in sum likelihoods.
-
-If it comes to analytical differentiation, do I do it per point (assuming others don't move) or for the ensemble (e.g. automatically with autograd pyautodiff auto-diff pytorch)?
-intro to autodiff suitable for jax: https://www.cs.toronto.edu/~rgrosse/courses/csc421_2019/readings/L06%20Automatic%20Differentiation.pdf
-https://github.com/google/jax
-looks great! basically says supports numpy so let's get started with numpy sparse.
-comparison of some autograds: https://arxiv.org/ftp/arxiv/papers/1606/1606.06311.pdf
-http://gcucurull.github.io/deep-learning/2020/06/03/jax-sparse-matrix-multiplication/
-
 
 profile visualisation
 https://jiffyclub.github.io/snakeviz/
 python -m cProfile -s cumtime BayesianDrape.py  --JUST-LLTEST >tmp && head -n 60 tmp
 
-
-
-summing accuracy - i tried math.fsum which is exact, no difference and no need to use now. np.sum always improves precision by pairwise add if no axis given. everything in program is float64
+summing accuracy - i tried math.fsum which is exact, no apparent difference in results or optimizer warnings, and no need to use now. np.sum always improves precision by pairwise add if no axis given. everything in program is float64
 
 (bayesiandrape) D:\BayesianDrape>python -m cProfile -o profile.prof -s cumtime BayesianDrape.py --TERRAIN-INPUT=data/all_os50_terrain.tif --POLYLINE-INPUT=data/test_awkward_link.shp --OUTPUT=data/test_output.shp --SLOPE-PRIOR-STD=2.2 --SPATIAL-MISMATCH-PRIOR-STD=25
+
+python BayesianDrape.py --TERRAIN-INPUT=data/all_os50_terrain.tif --POLYLINE-INPUT=data/biggertest.shp --OUTPUT=data/test_output.shp --SLOPE-PRIOR-STD=2.2 --SPATIAL-MISMATCH-PRIOR-STD=25
 
 Slope prior should be linear composable?  and length weighted. Discuss meaning of deviation from exp distribution. But what is right segment length? Autocorrelation? Adjacent segments in single point case?
 
@@ -66,3 +57,25 @@ profiling now
 20% sparse find
 20% gaussian pdf
 ...ditching fsum, exact gauss (tested it still works on awkward link). 
+
+todo: investigate opt termination. current settings are nice on biggertest but could it be quicker?
+
+
+could make default max offset equal tile diagonal
+
+conda install pytorch torchvision torchaudio cudatoolkit=10.1 -c pytorch -c conda-forge
+https://pytorch.org/docs/0.3.1/torch.html#torch.index_select
+Torch has its own optimizer should we use it? potentially yes to keep all the optim tensors on gpu only
+https://github.com/sbarratt/torch_interpolations
+
+before torch: gradient takes 17.2. After, 0.54 - and not on gpu yet!
+
+after torch even biggertest takes 0.0076 for gradient! increasing ncalls so its now 0.17
+
+later: can i include torch_interpolations in yaml? or just add to my own repo
+
+C:\Users\Crispin\Anaconda2\envs\bayesiandrape\lib\site-packages\torch_interpolations-0.1-py3.9.egg\torch_interpolations\multilinear.py:39: UserWarning: input value tensor is non-contiguous, this will lower the performance due to extra data copy when converting non-contiguous tensor to contiguous, please use contiguous input value tensor if possible (Triggered internally at  ..\aten\src\ATen/native/BucketizationUtils.h:20.)
+
+sounds like i can get working on laptop if i recompile from source:
+https://github.com/pytorch/pytorch/issues/31285
+https://discuss.pytorch.org/t/solved-pytorch-no-longer-supports-this-gpu-because-it-is-too-old/15444/19
