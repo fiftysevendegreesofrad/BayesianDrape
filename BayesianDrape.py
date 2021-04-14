@@ -25,15 +25,6 @@ from shapely.geometry import LineString
 import sys
 import torch
 
-using_cuda = False # torch.cuda.is_available() - but doesn't work for me currently as old hardware
-if using_cuda:
-    torch.set_default_tensor_type(torch.cuda.DoubleTensor)
-    def np_to_torch(x):
-        return torch.from_numpy(x).cuda()
-else:
-    def np_to_torch(x):
-        return torch.from_numpy(x)
-
 def pairwise(iterable):
     "s -> (s0,s1), (s1,s2), (s2, s3), ..."
     a, b = tee(iterable)
@@ -44,14 +35,25 @@ op = OptionParser()
 op.add_option("--TERRAIN-INPUT",dest="terrainfile",help="[REQUIRED] Terrain model",metavar="FILE")
 op.add_option("--POLYLINE-INPUT",dest="shapefile",help="[REQUIRED] Polyline feature class e.g. network or GPS trace",metavar="FILE")
 op.add_option("--OUTPUT",dest="outfile",help="[REQUIRED] Output feature class",metavar="FILE")
-op.add_option("--SLOPE-PRIOR-SCALE",dest="slope_prior_std",help="[REQUIRED] Scale of exponential prior for path slope (equivalent to mean slope)",metavar="ANGLE_IN_DEGREES",type="float")
+op.add_option("--SLOPE-PRIOR-SCALE",dest="slope_prior_scale",help="[REQUIRED] Scale of exponential prior for path slope (equivalent to mean slope)",metavar="ANGLE_IN_DEGREES",type="float")
 op.add_option("--SPATIAL-MISMATCH-PRIOR-STD",dest="mismatch_prior_std",help="[REQUIRED] Standard deviation of zero-centred Gaussian prior for spatial mismatch (in spatial units of projection)",metavar="DISTANCE",type="float")
 op.add_option("--SPATIAL-MISMATCH-MAX",dest="mismatch_max",help="Maximum permissible spatial mismatch (in spatial units of projection; defaults to 4x mismatch prior std)",metavar="DISTANCE",type="float")
 op.add_option("--SLOPE-CONTINUITY-PARAM",dest="slope_continuity",help="Slope continuity parameter",metavar="X",type="float",default=0.38)
 op.add_option("--JUST-LLTEST",dest="just_lltest",action="store_true",help="Test mode")
 op.add_option("--GRADIENT-NEIGHBOUR-DIFFERENCE-OUTPUT",dest="grad_neighbour_diff_file",help="Output for distribution of neighbour gradient differences (for computing autocorrelation)",metavar="FILE")
+op.add_option("--GPU",dest="cuda",action="store_true",help="Enable GPU acceleration")
 
 (options,args) = op.parse_args()
+
+if options.cuda:
+    if not torch.cuda.is_available():
+        op.error("PyTorch does show show CUDA to be available - you'll have to run without --GPU")
+    torch.set_default_tensor_type(torch.cuda.DoubleTensor)
+    def np_to_torch(x):
+        return torch.from_numpy(x).cuda()
+else:
+    def np_to_torch(x):
+        return torch.from_numpy(x)
 
 if not options.just_lltest:
     missing_options = []
@@ -150,9 +152,9 @@ if options.grad_neighbour_diff_file:
 # Define priors - both implemented by hand for speed and compatibility with autodiff
 
 # Exponential grade prior - though we convert to a slope prior for precision reasons
-grade_mean = np.tan(options.slope_prior_std*np.pi/180)
-print (f"{grade_mean=}")
-grade_exp_dist_lambda = 1/grade_mean
+grade_scale = np.tan(options.slope_prior_scale*np.pi/180)
+print (f"Slope prior scale of {options.slope_prior_scale}\N{DEGREE SIGN} gives grade of {grade_scale:.2f}%")
+grade_exp_dist_lambda = 1/grade_scale
 def my_exp_logpdf(grade):
     return -np.log(grade_exp_dist_lambda) - grade_exp_dist_lambda*grade
 
