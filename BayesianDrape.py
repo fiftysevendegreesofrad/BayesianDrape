@@ -15,15 +15,15 @@ from scipy.spatial import distance_matrix
 from scipy.special import erfc
 import scipy.sparse
 from scipy.sparse import lil_matrix,coo_matrix
-from scipy.interpolate import RegularGridInterpolator
+from torch_interpolations import RegularGridInterpolator
 import geopandas as gp
 import pandas as pd
-import autograd.numpy as np
-from autograd import grad
+import numpy as np
 from ordered_set import OrderedSet
 from itertools import tee,combinations
 from shapely.geometry import LineString
 import sys
+import torch
 
 def pairwise(iterable):
     "s -> (s0,s1), (s1,s2), (s2, s3), ..."
@@ -61,9 +61,10 @@ terrain_raster = rioxarray.open_rasterio(options.terrainfile)
 print (f"{net_df.crs=}\nterrain raster crs??")
 # todo assert these projections are the same
 
-terrain_xs = np.array(terrain_raster.x,np.float64)
-terrain_ys = np.flip(np.array(terrain_raster.y,np.float64)) 
-terrain_data = np.flip(terrain_raster.data[0],axis=0).T # fixme does this generalize to other projections?
+terrain_xs = torch.from_numpy(np.array(terrain_raster.x,np.float64))
+terrain_ys = torch.from_numpy(np.flip(np.array(terrain_raster.y,np.float64)).copy() )
+terrain_data = torch.from_numpy(np.flip(terrain_raster.data[0],axis=0).T.copy()) # fixme does this generalize to other projections?
+
 terrain_interpolator = RegularGridInterpolator((terrain_xs,terrain_ys), terrain_data)
 del terrain_xs, terrain_ys, terrain_data, terrain_raster
 
@@ -204,13 +205,19 @@ del neighbour_distances
 
 llcount=0
 
+all_points = torch.from_numpy(all_points)
+neighbour_inv_distances = torch.from_numpy(neighbour_inv_distances)
+neighbour_weights = torch.from_numpy(neighbour_weights)
+
 def minus_log_likelihood(point_offsets):
+    if not torch.is_tensor(point_offsets):
+        point_offsets = torch.from_numpy(point_offsets)
     global llcount
     llcount += 1
-    point_offsets = point_offsets.reshape(all_points.shape) # as optimize flattens point_offsets
+    point_offsets = torch.reshape(point_offsets,all_points.shape) # as optimize flattens point_offsets
     points_to_interpolate = all_points + point_offsets
 
-    zs = terrain_interpolator(points_to_interpolate)
+    zs = terrain_interpolator([points_to_interpolate[:,0],points_to_interpolate[:,1]])
     neighbour_heightdiffs = abs(zs[n1s]-zs[n2s]) 
     neighbour_grades = neighbour_heightdiffs*neighbour_inv_distances
     length_weighted_neighbour_likelihood = grade_logpdf(neighbour_grades)*neighbour_weights
@@ -221,25 +228,45 @@ def minus_log_likelihood(point_offsets):
 
     return -(neighbour_likelihood+offset_likelihood)
 
-minus_log_likelihood_gradient = grad(minus_log_likelihood)
+def minus_log_likelihood_gradient(point_offsets):
+    if not torch.is_tensor(point_offsets):
+        point_offsets = torch.from_numpy(point_offsets)
+    point_offsets.requires_grad = True
+    minus_log_likelihood(point_offsets).backward()
+    return point_offsets.grad
 
 # Test function
 
 if options.just_lltest:
     print ("Beginning LL test")
     offset_unit_vector = np.zeros((num_points,2),float)
+    grad_test_input = torch.flatten(torch.from_numpy(offset_unit_vector))
     from timeit import Timer
     ncalls = 1
     nrepeats = 1
-    t = Timer(lambda: minus_log_likelihood_gradient(offset_unit_vector))
+    
+    if options.shapefile=="data/test_awkward_link.shp":
+        original_lls = [579.0005179822035, 593.3853491831525, 629.0507280920274, 688.2552177220412, 783.6203274627381]
+        old_gradient = np.array([-0.55813296,-0.12771772])
+    elif options.shapefile=="data/biggertest.shp":
+        original_lls = [27505.175830755226, 27800.565463084426, 28517.842110572517, 29590.674711176584, 30969.7985891239]
+        old_gradient = np.array([-0.09709856, 0.00749611])
+    else:
+        original_lls = [0,0,0,0,0]
+        old_gradient = None
+    
+    print (f"{minus_log_likelihood(grad_test_input)=}")
+    
+    print ("Old gradient[0]",old_gradient)
+    t = Timer(lambda: print("New gradient[0]",minus_log_likelihood_gradient(grad_test_input)[0:2].numpy()))
     print("Current gradient time:",min(t.repeat(number=ncalls,repeat=nrepeats)))
     
     for i in range(num_points):
         offset_unit_vector[i]=np.array([(i//3)%3,i%3])-1
-    original_lls = [579.0005179822035, 593.3853491831524, 629.0507280920275, 688.2552177220413, 783.6203274627378]
+    
     new_lls = []
     for i,oll in enumerate(original_lls):
-        ll = minus_log_likelihood(offset_unit_vector*i)
+        ll = float(minus_log_likelihood(torch.flatten(torch.from_numpy(offset_unit_vector*i))))
         new_lls.append(ll)
         passed=(ll==oll)
         print (f"{i=} {oll=} {ll=} {passed=}")
@@ -257,7 +284,7 @@ def callback(x):
     print (f"callback {llcount=} {ll=} {lldiff=}")
     llcount=0
     
-init_guess = np.zeros((num_points*2),float)
+init_guess = torch.from_numpy(np.zeros((num_points*2),float))
 initial_log_likelihood = -minus_log_likelihood(init_guess)
 last_ll = initial_log_likelihood
 bounds = Bounds(-options.mismatch_max,options.mismatch_max) 
@@ -267,7 +294,7 @@ result = minimize(minus_log_likelihood,init_guess,callback = callback,bounds=bou
 print (f"Finished optimizing: {result['success']=} {result['message']}")
 final_offsets = result["x"].reshape(all_points.shape)
 final_points = all_points + final_offsets
-optimal_zs = terrain_interpolator(final_points)
+optimal_zs = terrain_interpolator([final_points[:,0],final_points[:,1]])
 final_log_likelihood = -minus_log_likelihood(final_offsets)
 
 # Print result report
