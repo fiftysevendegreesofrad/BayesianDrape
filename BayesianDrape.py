@@ -88,16 +88,14 @@ def terrain_interpolator(points_to_interpolate):
 # Todo: add points to linestrings where they cross raster cells or at least every cell-distance
 # (latter may make more sense as more expensive to compute gradients at cell boundaries)
 
-# Represent points independently of linestrings:
-# - and represent each linestring with a point index list 
-# xs, ys initially stored in OrderedSet so we can match line endpoints; later converted to array
-# If this gets too slow we can potentially do dict lookup for line endpoints only
-
+# Build point model: we represent each linestring with a point index list 
+# point (x,y)s are initially stored in OrderedSets so we can give the same index to matching line endpoints; these OrderedSets are later converted to arrays
+# We define them now so we can simultaneously define an enum for the corresponding point type that belongs in each
 
 all_points_sets = [OrderedSet(),OrderedSet(),OrderedSet()]
 ESTIMATED,FIXED,DECOUPLED = range(len(all_points_sets))
 
-point_indices_all_rows = []
+# Feature and point type model (controls behaviour of optimizer at each point)
 
 point_to_type = {} 
 
@@ -135,8 +133,9 @@ for _,row in net_df.iterrows():
     feature_type = get_feature_type(row)
     for x,y in zip(xs,ys):
         set_point_type((x,y),feature_type)
-    
+
 # second pass through df to create point model
+point_indices_all_rows = []
 for _,row in net_df.iterrows():
     assert row.geometry.geom_type=='LineString'
     xs,ys = row.geometry.coords.xy
@@ -147,12 +146,6 @@ for _,row in net_df.iterrows():
         point_indices.append((point_type,index))
     point_indices_all_rows.append(point_indices)
 
-net_df["point_indices"] = point_indices_all_rows # fixme what if column name exists already? can't i just store the list separately
-
-# Build point inverse distance matrix which also serves as adjacency matrix
-# provided we optimize all points together, we only store distances in one direction
-# otherwise each gradient likelihood is counted twice, which breaks log likelihood
-# if we did ever want to compute log likelihood for a single point, we would need a symmetric distance matrix
 num_estimated_points = len(all_points_sets[ESTIMATED])
 num_decoupled_points = len(all_points_sets[DECOUPLED])
 num_fixed_points = len(all_points_sets[FIXED])
@@ -167,10 +160,8 @@ def get_point_type_and_index(point):
     t = point_to_type[point]
     return t,all_points_sets[t].index(point)
 
-distance_matrix_estimated_to_estimated = lil_matrix((num_estimated_points,num_estimated_points))
-distance_matrix_estimated_to_fixed = lil_matrix((num_estimated_points,num_fixed_points))
+# Initialize decoupled_graph which stores distances between all decoupled points and their neighbours (of any type), with its own indexing scheme
 
-# decoupled graph stores all points either decoupled, or adjacent to a decoupled point, with its own indexing scheme
 decoupled_graph = lil_matrix((total_num_points,total_num_points))
 decoupled_group_boundary_points = []
 
@@ -200,6 +191,16 @@ def decoupled_graph_add(decoupled_index,other_type,other_index,dist):
     else:
         decoupled_group_boundary_points.append((other_type,other_index))
 
+# Initialize point inverse distance matrices, which also serve as adjacency matrices
+
+distance_matrix_estimated_to_estimated = lil_matrix((num_estimated_points,num_estimated_points))
+distance_matrix_estimated_to_fixed = lil_matrix((num_estimated_points,num_fixed_points))
+
+# Build all matrices (third pass through df)
+# provided we optimize all points together, we only store distances in one direction
+# otherwise each gradient likelihood is counted twice, which breaks log likelihood
+# if we did ever want to compute log likelihood for a single point, we would need a symmetric distance matrix
+
 for _,row in net_df.iterrows():
     xs,ys = row.geometry.coords.xy
     for point1,point2 in pairwise(zip(xs,ys)):
@@ -225,7 +226,6 @@ for _,row in net_df.iterrows():
 
 all_points_arrays = [np.array(s) for s in all_points_sets]
 del all_points_sets,point_to_type
-
 distance_matrix_estimated_to_estimated = distance_matrix_estimated_to_estimated.tocsr()
 distance_matrix_estimated_to_fixed = distance_matrix_estimated_to_fixed.tocsr()
 decoupled_graph = decoupled_graph.tocsr()
@@ -233,8 +233,8 @@ decoupled_graph = decoupled_graph.tocsr()
 all_estimated_segment_lengths = np.concatenate((distance_matrix_estimated_to_estimated.data,distance_matrix_estimated_to_fixed.data))
 mean_estimated_segment_length = all_estimated_segment_lengths.mean()
 print("Minimum estimated segment length",all_estimated_segment_lengths.min())
-del all_estimated_segment_lengths
 print("Mean estimated segment length",mean_estimated_segment_length)
+del all_estimated_segment_lengths
     
 # Define priors - both implemented by hand for speed and compatibility with autodiff
 
@@ -259,7 +259,7 @@ k = -np.log(sigma)-0.5*np.log(2*np.pi)
 def squareoffset_logpdf(x):
     return k-(x/sigma_sq)/2 
         
-# test case for gradient priors
+# Test case for gradient priors
 
 show_distributions = False
 if show_distributions:
@@ -314,7 +314,7 @@ if len(all_points_arrays[FIXED]):
 else:
     fixed_zs = np.zeros(0)
 
-# Convert to PyTorch
+# Convert everything minus_log_likelihood needs to PyTorch
 all_points_arrays = [np_to_torch(a) for a in all_points_arrays]
 sparse_est_est_neighbour_weights = np_to_torch(sparse_est_est_neighbour_weights)
 sparse_est_est_neighbour_inv_distances = np_to_torch(sparse_est_est_neighbour_inv_distances)
@@ -448,13 +448,13 @@ for pt in decoupled_group_boundary_points:
     # n.b. if performance is an issue the method below can take multiple indices at once
     distances,_ = scipy.sparse.csgraph.dijkstra(decoupled_graph,directed=True,indices=ind)
     
-    # check the only node with zero distance is the current boundary node
+    # sanity check: the only node with zero distance is the current boundary node
     (zerodist_node,), = np.where(distances==0)
     assert zerodist_node==ind 
     
-    # check all other non-decoupled graph nodes should have distance==inf
+    # sanity check: all other non-decoupled graph nodes should have distance==inf
     ogn = other_graph_nodes_only(distances)
-    assert ogn.shape==(num_estimated_points+num_fixed_points,) # all other graph nodes
+    assert ogn.shape==(num_estimated_points+num_fixed_points,) 
     ogn_check = np.zeros(ogn.shape)+np.inf
     ogn_check[ind-num_decoupled_points]==0
     assert ogn==ogn_check
@@ -469,8 +469,7 @@ decoupled_zs = decoupled_weighted_z_sum/decoupled_weight_sum
 # Reconstruct geometries
 
 print ("Reconstructing geometries")
-net_df.geometry = net_df.apply(lambda row: LineString([get_point_output(pt_index,decoupled_zs) for pt_index in row.point_indices]),axis=1)
-del net_df["point_indices"]
+net_df.geometry = [LineString([get_point_output(pt_index,decoupled_zs) for pt_index in row_point_indices]) for row_point_indices in point_indices_all_rows]
 
 print (f"Writing output to {options.outfile}") 
 net_df.to_file(options.outfile)
