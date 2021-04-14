@@ -77,3 +77,31 @@ later: can i include torch_interpolations in yaml? or just add to my own repo
 sounds like i can get working on laptop if i recompile from source:
 https://github.com/pytorch/pytorch/issues/31285
 https://discuss.pytorch.org/t/solved-pytorch-no-longer-supports-this-gpu-because-it-is-too-old/15444/19
+
+
+currently we have a distance matrix for all points - remove bridges or no?
+easier to keep in i think
+
+can index select from all points to get 
+neighbour_weights
+neighbour_inv_distances
+THESE SHOULD NOT INCLUDE DECOUPLED POINTS AS WE DON'T TEST THEIR GRADIENTS
+but we should have copies of these mapping all points to fixed points
+
+boundary case of bridge ends: these are NOT decoupled
+
+can also index select from all points to get decoupled points
+need a sparse matrix of decoupled_neighbour_weights 
+that maps from all_decoupled_points to normal zs
+and another from all_decoupled_points to fixed zs
+this is used for weighted mean (double check that gives linear interpolation - yes)
+
+should we include fix functionality at the same time? possibly yes.
+we *do* compute gradients to fixed points but we don't vary them
+again then split fixes to another array that's easiest not to include in the main distance matrix
+and create a matrix mapping from each fix to its neighbours (in that direction) so we can test it
+
+weights_matrix_decoupled_to_estimated
+weights_matrix_decoupled_to_fixed
+weights_matrix_estimated_to_estimated
+weights_matrix_estimated_to_fixed

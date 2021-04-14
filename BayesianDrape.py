@@ -42,12 +42,14 @@ op.add_option("--SLOPE-CONTINUITY-PARAM",dest="slope_continuity",help="Slope con
 op.add_option("--JUST-LLTEST",dest="just_lltest",action="store_true",help="Test mode")
 op.add_option("--GRADIENT-NEIGHBOUR-DIFFERENCE-OUTPUT",dest="grad_neighbour_diff_file",help="Output for distribution of neighbour gradient differences (for computing autocorrelation)",metavar="FILE")
 op.add_option("--GPU",dest="cuda",action="store_true",help="Enable GPU acceleration")
+op.add_option("--FIX-FIELD",dest="fixfield",help="Ordinary drape of features over terrain where true",metavar="FIELDNAME")
+op.add_option("--DECOUPLE-FIELD",dest="decouplefield",help="Decouple features from terrain where true (useful for bridges/tunnels)",metavar="FIELDNAME")
 
 (options,args) = op.parse_args()
 
 if options.cuda:
     if not torch.cuda.is_available():
-        op.error("PyTorch does show show CUDA to be available - you'll have to run without --GPU")
+        op.error("PyTorch CUDA is not available; try running without --GPU")
     torch.set_default_tensor_type(torch.cuda.DoubleTensor)
     def np_to_torch(x):
         return torch.from_numpy(x).cuda()
@@ -76,8 +78,12 @@ terrain_xs = np_to_torch(np.array(terrain_raster.x,np.float64))
 terrain_ys = np_to_torch(np.flip(np.array(terrain_raster.y,np.float64)).copy() )
 terrain_data = np_to_torch(np.flip(terrain_raster.data[0],axis=0).T.copy()) # fixme does this generalize to other projections?
 
-terrain_interpolator = RegularGridInterpolator((terrain_xs,terrain_ys), terrain_data)
+terrain_interpolator_inner = RegularGridInterpolator((terrain_xs,terrain_ys), terrain_data)
 del terrain_xs, terrain_ys, terrain_data, terrain_raster
+def terrain_interpolator(points_to_interpolate):
+    # calling contiguous() silences the performance warning from PyTorch
+    # swapping dimensions on our definition of points throughout, and ensuring all tensors are created contiguous, gives maybe 10% speed boost - reverting for now as that's premature
+    return terrain_interpolator_inner([points_to_interpolate[:,0].contiguous(),points_to_interpolate[:,1].contiguous()])
 
 # Todo: add points to linestrings where they cross raster cells or at least every cell-distance
 # (latter may make more sense as more expensive to compute gradients at cell boundaries)
@@ -87,71 +93,152 @@ del terrain_xs, terrain_ys, terrain_data, terrain_raster
 # xs, ys initially stored in OrderedSet so we can match line endpoints; later converted to array
 # If this gets too slow we can potentially do dict lookup for line endpoints only
 
-all_points_set = OrderedSet()
+
+all_points_sets = [OrderedSet(),OrderedSet(),OrderedSet()]
+ESTIMATED,FIXED,DECOUPLED = range(len(all_points_sets))
+
 point_indices_all_rows = []
 
+point_to_type = {} 
+
+# at feature level, decoupled takes precedence over fixed as this makes sense for draping bridges
+both_fixed_decoupled_warning_issued = False
+def get_feature_type(row):
+    global both_fixed_decoupled_warning_issued
+    fixed = options.fixfield and row[fixfield]
+    decoupled = options.decouplefield and row[decouplefield]
+    if not both_fixed_decoupled_warning_issued and fixed and decoupled:
+        print (f"Input contains rows which are both fixed and decoupled - decoupled takes precedence")
+        both_fixed_decoupled_warning_issued = True
+    if decoupled:
+        return DECOUPLED
+    elif fixed:
+        return FIXED
+    else:
+        return ESTIMATED
+
+# conversely at point level, precedence order for endpoints (and hence any point with conflict) is fixed, estimated, decoupled
+def set_point_type(coords,feature_type):
+    if feature_type == FIXED:
+        point_to_type[coords] = FIXED
+    elif feature_type == ESTIMATED:
+        if coords not in point_to_type or point_to_type[coords] != FIXED:
+            point_to_type[coords] = ESTIMATED
+    elif feature_type == DECOUPLED:
+        if coords not in point_to_type[coords]:
+            point_to_type[coords] = DECOUPLED
+    else: assert False    
+
+# first pass through df to resolve point types
+for _,row in net_df.iterrows():
+    xs,ys = row.geometry.coords.xy
+    feature_type = get_feature_type(row)
+    for x,y in zip(xs,ys):
+        set_point_type((x,y),feature_type)
+    
+# second pass through df to create point model
 for _,row in net_df.iterrows():
     assert row.geometry.geom_type=='LineString'
     xs,ys = row.geometry.coords.xy
     point_indices = []
     for x,y in zip(xs,ys):
-        index = all_points_set.add((x,y))
-        point_indices.append(index)
+        point_type = point_to_type[(x,y)]
+        index = all_points_sets[point_type].add((x,y))
+        point_indices.append((point_type,index))
     point_indices_all_rows.append(point_indices)
-net_df["point_indices"] = point_indices_all_rows # fixme what if column name exists already?
+
+net_df["point_indices"] = point_indices_all_rows # fixme what if column name exists already? can't i just store the list separately
 
 # Build point inverse distance matrix which also serves as adjacency matrix
 # provided we optimize all points together, we only store distances in one direction
 # otherwise each gradient likelihood is counted twice, which breaks log likelihood
 # if we did ever want to compute log likelihood for a single point, we would need a symmetric distance matrix
-num_points = len(all_points_set)
-print (f"{num_points=}")
-distances = lil_matrix((num_points,num_points))
+num_estimated_points = len(all_points_sets[ESTIMATED])
+num_decoupled_points = len(all_points_sets[DECOUPLED])
+num_fixed_points = len(all_points_sets[FIXED])
+total_num_points = num_estimated_points+num_decoupled_points+num_fixed_points
+print (total_num_points,"points in total")
+print (num_estimated_points,"points for estimation")
+print (num_decoupled_points,"points are decoupled")
+print (num_fixed_points,"points are fixed")
+assert num_estimated_points > 0
+
+def get_point_type_and_index(point):
+    t = point_to_type[point]
+    return t,all_points_sets[t].index(point)
+
+distance_matrix_estimated_to_estimated = lil_matrix((num_estimated_points,num_estimated_points))
+distance_matrix_estimated_to_fixed = lil_matrix((num_estimated_points,num_fixed_points))
+
+# decoupled graph stores all points either decoupled, or adjacent to a decoupled point, with its own indexing scheme
+decoupled_graph = lil_matrix((total_num_points,total_num_points))
+decoupled_group_boundary_points = []
+
+def decoupled_graph_index(pt_type,index):
+    # decoupled_graph_nodes_only and other_graph_nodes_only below, rely on this ordering
+    if pt_type==DECOUPLED:
+        return index
+    elif pt_type==ESTIMATED:
+        return num_decoupled_points+index
+    elif pt_type==FIXED:
+        return num_decoupled_points+num_estimated_points+index
+    else: assert False
+
+def decoupled_graph_nodes_only(distances):
+    return distances[0:num_decoupled_points]
+    
+def other_graph_nodes_only(distances):
+    return distances[num_decoupled_points:]
+
+def decoupled_graph_add(decoupled_index,other_type,other_index,dist):
+    i1 = decoupled_graph_index(DECOUPLED,decoupled_index)
+    i2 = decoupled_graph_index(other_type,other_index)
+    # directed graph - boundary points can flow inwards only
+    decoupled_graph[i1,i2] = dist
+    if other_type == DECOUPLED:
+        decoupled_graph[i2,i1] = dist
+    else:
+        decoupled_group_boundary_points.append((other_type,other_index))
+
 for _,row in net_df.iterrows():
     xs,ys = row.geometry.coords.xy
     for point1,point2 in pairwise(zip(xs,ys)):
-        index1 = all_points_set.index(point1)
-        index2 = all_points_set.index(point2)
-        assert index1!=index2
+        type1,index1 = get_point_type_and_index(point1)
+        type2,index2 = get_point_type_and_index(point2)
+        assert (type1,index1)!=(type2,index2)
         (x1,y1),(x2,y2) = point1,point2
         dist = ((x2-x1)**2+(y2-y1)**2)**0.5
         assert dist>0
-        distances[index1,index2]=dist
-        
-all_points = np.array(all_points_set)
-del all_points_set
-distances = distances.tocsr()
-mean_segment_length = np.mean(distances.data)
+        if (type1,type2)==(ESTIMATED,ESTIMATED):
+            distance_matrix_estimated_to_estimated[index1,index2]=dist
+        elif (type1,type2)==(ESTIMATED,FIXED):
+            distance_matrix_estimated_to_fixed[index1,index2]=dist
+        elif (type1,type2)==(FIXED,ESTIMATED):
+            distance_matrix_estimated_to_fixed[index2,index1]=dist
+        elif type1==DECOUPLED:
+            decoupled_graph_add(index1,type2,index2,dist)
+        elif type2==DECOUPLED:
+            assert type1!=DECOUPLED # handled above
+            decoupled_graph_add(index2,type1,index1,dist)
+        else: 
+            assert (type1,type2)==(FIXED,FIXED) # no need to store
 
-print (f"{distances.data.min()=}")
+all_points_arrays = [np.array(s) for s in all_points_sets]
+del all_points_sets,point_to_type
 
-# Compute slope autocorr distribution
+distance_matrix_estimated_to_estimated = distance_matrix_estimated_to_estimated.tocsr()
+distance_matrix_estimated_to_fixed = distance_matrix_estimated_to_fixed.tocsr()
+decoupled_graph = decoupled_graph.tocsr()
 
-if options.grad_neighbour_diff_file:
-    neighbour_grade_diffs = []
-    one_side_grade = []
-    zs = terrain_interpolator(all_points)
-    # for each pair of neighbour segments compute difference in slope
-    # ...to get neighbour segment pairs, iterate through points, taking combinations for each
-    symmetric_distances = distances + distances.T
-    for row_idx in range(num_points):
-        a,b,d = scipy.sparse.find(symmetric_distances.getrow(row_idx))
-        assert np.all(a==0) # redundant index in a single row result
-        neighbours = zip(b,d)
-        for (idx1,d1),(idx2,d2) in combinations(neighbours,2):
-            h1 = zs[idx1]
-            h2 = zs[idx2]
-            h0 = zs[row_idx]
-            g1 = abs(h1-h0)/d1
-            g2 = abs(h2-h0)/d2
-            neighbour_grade_diffs.append(abs(g1-g2))
-            one_side_grade.append(g1)
-    pd.DataFrame.from_dict({"grade_diff":neighbour_grade_diffs,"one_side_grade":one_side_grade}).to_csv(options.grad_neighbour_diff_file)
-    sys.exit(0)
+all_estimated_segment_lengths = np.concatenate((distance_matrix_estimated_to_estimated.data,distance_matrix_estimated_to_fixed.data))
+mean_estimated_segment_length = all_estimated_segment_lengths.mean()
+print("Minimum estimated segment length",all_estimated_segment_lengths.min())
+del all_estimated_segment_lengths
+print("Mean estimated segment length",mean_estimated_segment_length)
     
 # Define priors - both implemented by hand for speed and compatibility with autodiff
 
-# Exponential grade prior - though we convert to a slope prior for precision reasons
+# Exponential grade prior
 grade_scale = np.tan(options.slope_prior_scale*np.pi/180)
 print (f"Slope prior scale of {options.slope_prior_scale}\N{DEGREE SIGN} gives grade of {grade_scale:.2f}%")
 grade_exp_dist_lambda = 1/grade_scale
@@ -172,8 +259,6 @@ k = -np.log(sigma)-0.5*np.log(2*np.pi)
 def squareoffset_logpdf(x):
     return k-(x/sigma_sq)/2 
         
-print (f"{mean_segment_length=}")
-
 # test case for gradient priors
 
 show_distributions = False
@@ -187,7 +272,7 @@ if show_distributions:
     def slope_prior_test(heights,neighbour_distances):
         mean_segment_length = np.mean(neighbour_distances)
         neighbour_heightdiffs = np.diff(heights)
-        length_weighted_neighbour_likelihood = grade_logpdf(neighbour_heightdiffs/neighbour_distances)*neighbour_distances / mean_segment_length
+        length_weighted_neighbour_likelihood = grade_logpdf(neighbour_heightdiffs/neighbour_distances)*neighbour_distances / mean_estimated_segment_length
         return length_weighted_neighbour_likelihood.sum()
         
     print (f"{slope_prior_test(even_slope_equal_dists,equal_dists)=}")
@@ -208,38 +293,59 @@ if show_distributions:
 
 # Define posterior log likelihood
 
-n1s,n2s,neighbour_distances = scipy.sparse.find(distances)
-neighbour_weights = neighbour_distances / mean_segment_length
-neighbour_inv_distances = np.asarray(distances[n1s,n2s])[0]**-1
-del distances
-del neighbour_distances
+# Prepare sparse arrays estimated-to-estimated: two indices into estimated points, weights, inverse distances
+sparse_est_est_neighbour1s,sparse_est_est_neighbour2s,sparse_est_est_neighbour_distances = scipy.sparse.find(distance_matrix_estimated_to_estimated)
+sparse_est_est_neighbour_weights = sparse_est_est_neighbour_distances / mean_estimated_segment_length
+sparse_est_est_neighbour_inv_distances = np.asarray(distance_matrix_estimated_to_estimated[sparse_est_est_neighbour1s,sparse_est_est_neighbour2s])[0]**-1
+del sparse_est_est_neighbour_distances
+del distance_matrix_estimated_to_estimated
+
+# Prepare sparse arrays estimated-to-fixed: indices into fixed and estimated points, weights, inverse distances
+sparse_est_fix_neighbour1s,sparse_est_fix_neighbour2s,sparse_est_fix_neighbour_distances = scipy.sparse.find(distance_matrix_estimated_to_fixed)
+sparse_est_fix_neighbour_weights = sparse_est_fix_neighbour_distances / mean_estimated_segment_length
+if len(sparse_est_fix_neighbour_distances):
+    sparse_est_fix_neighbour_inv_distances = np.asarray(distance_matrix_estimated_to_fixed[sparse_est_fix_neighbour1s,sparse_est_fix_neighbour2s])[0]**-1
+else:
+    sparse_est_fix_neighbour_inv_distances = np.zeros(0) # numpy zero length arrays must be 0-dimensional, which is inconvenient
+del sparse_est_fix_neighbour_distances
+del distance_matrix_estimated_to_fixed
+if len(all_points_arrays[FIXED]):
+    fixed_zs = terrain_interpolator(all_points_arrays[FIXED])
+else:
+    fixed_zs = np.zeros(0)
+
+# Convert to PyTorch
+all_points_arrays = [np_to_torch(a) for a in all_points_arrays]
+sparse_est_est_neighbour_weights = np_to_torch(sparse_est_est_neighbour_weights)
+sparse_est_est_neighbour_inv_distances = np_to_torch(sparse_est_est_neighbour_inv_distances)
+sparse_est_fix_neighbour_weights = np_to_torch(sparse_est_fix_neighbour_weights)
+sparse_est_fix_neighbour_inv_distances = np_to_torch(sparse_est_fix_neighbour_inv_distances)
+fixed_zs = np_to_torch(fixed_zs)
 
 llcount=0
-
-all_points = np_to_torch(all_points)
-neighbour_inv_distances = np_to_torch(neighbour_inv_distances)
-neighbour_weights = np_to_torch(neighbour_weights)
-
 def minus_log_likelihood(point_offsets):
     if not torch.is_tensor(point_offsets):
         point_offsets = np_to_torch(point_offsets)
     global llcount
     llcount += 1
-    point_offsets = torch.reshape(point_offsets,all_points.shape) # as optimize flattens point_offsets
-    points_to_interpolate = all_points + point_offsets
-
-    # calling contiguous() silences the performance warning from PyTorch
-    # swapping dimensions on our definition of point_offsets, and ensuring all tensors are created contiguous, gives maybe 10% speed boost - reverting for now as that's premature
-    zs = terrain_interpolator([points_to_interpolate[:,0].contiguous(),points_to_interpolate[:,1].contiguous()])
-    neighbour_heightdiffs = abs(zs[n1s]-zs[n2s]) 
-    neighbour_grades = neighbour_heightdiffs*neighbour_inv_distances
-    length_weighted_neighbour_likelihood = grade_logpdf(neighbour_grades)*neighbour_weights
-    neighbour_likelihood = length_weighted_neighbour_likelihood.sum()
+    point_offsets = torch.reshape(point_offsets,all_points_arrays[ESTIMATED].shape) # as optimize flattens point_offsets
     
+    # Log likelihood of grades between all neighbouring pairs of estimated points
+    estimated_zs = terrain_interpolator(all_points_arrays[ESTIMATED] + point_offsets)
+    est_est_neighbour_heightdiffs = abs(estimated_zs[sparse_est_est_neighbour1s]-estimated_zs[sparse_est_est_neighbour2s]) 
+    est_est_neighbour_grades = est_est_neighbour_heightdiffs*sparse_est_est_neighbour_inv_distances
+    est_est_neighbour_likelihood = (grade_logpdf(est_est_neighbour_grades)*sparse_est_est_neighbour_weights).sum()
+    
+    # Log likelihood of grades between all estimated-fixed point pairs
+    est_fix_neighbour_heightdiffs = abs(estimated_zs[sparse_est_fix_neighbour1s]-fixed_zs[sparse_est_fix_neighbour2s]) 
+    est_fix_neighbour_grades = est_fix_neighbour_heightdiffs*sparse_est_fix_neighbour_inv_distances
+    est_fix_neighbour_likelihood = (grade_logpdf(est_fix_neighbour_grades)*sparse_est_fix_neighbour_weights).sum()
+    
+    # Log likelihood of point offsets
     offset_square_distances = ((point_offsets**2).sum(axis=1))
     offset_likelihood = squareoffset_logpdf(offset_square_distances).sum()
 
-    return -(neighbour_likelihood+offset_likelihood)
+    return -(est_est_neighbour_likelihood + est_fix_neighbour_likelihood + offset_likelihood)
 
 def minus_log_likelihood_gradient(point_offsets):
     if not torch.is_tensor(point_offsets):
@@ -252,7 +358,7 @@ def minus_log_likelihood_gradient(point_offsets):
 
 if options.just_lltest:
     print ("Beginning LL test")
-    offset_unit_vector = np.zeros((num_points,2),float)
+    offset_unit_vector = np.zeros((num_estimated_points,2),float)
     grad_test_input = torch.flatten(np_to_torch(offset_unit_vector))
     from timeit import Timer
     ncalls = 100
@@ -275,7 +381,7 @@ if options.just_lltest:
     t = Timer(lambda: minus_log_likelihood_gradient(grad_test_input))
     print("Current gradient time:",min(t.repeat(number=ncalls,repeat=nrepeats)))
     
-    for i in range(num_points):
+    for i in range(num_estimated_points):
         offset_unit_vector[i]=np.array([(i//3)%3,i%3])-1
     
     new_lls = []
@@ -298,7 +404,7 @@ def callback(x):
     print (f"callback {llcount=} {ll=} {lldiff=}")
     llcount=0
     
-init_guess = np_to_torch(np.zeros((num_points*2),float))
+init_guess = np_to_torch(np.zeros((num_estimated_points*2),float))
 initial_log_likelihood = -minus_log_likelihood(init_guess)
 last_ll = initial_log_likelihood
 bounds = Bounds(-options.mismatch_max,options.mismatch_max) 
@@ -306,9 +412,9 @@ print ("Starting optimizer")
 # setting maxiter=200 gives nice results but can we do better? fixme
 result = minimize(minus_log_likelihood,init_guess,callback = callback,bounds=bounds,jac=minus_log_likelihood_gradient,options=dict(maxiter=200)) 
 print (f"Finished optimizing: {result['success']=} {result['message']}")
-final_offsets = result["x"].reshape(all_points.shape)
-final_points = all_points + final_offsets
-optimal_zs = terrain_interpolator([final_points[:,0],final_points[:,1]])
+final_offsets = result["x"].reshape(all_points_arrays[ESTIMATED].shape)
+final_points = all_points_arrays[ESTIMATED] + final_offsets
+optimal_zs = terrain_interpolator(final_points)
 final_log_likelihood = -minus_log_likelihood(final_offsets)
 
 # Print result report
@@ -318,11 +424,52 @@ mean_offset_dist = offset_distances.mean()
 max_offset_dist = offset_distances.max()
 print (f"{initial_log_likelihood=}\n{final_log_likelihood=}\n{mean_offset_dist=}\n{max_offset_dist=}")
 
+# Interpolate decoupled points: iterate through decoupled_group_boundary_points, as they are likely fewer in number than the decoupled points themselves
+
+def get_point_output(index_tuple,decoupled_zs):
+    pt_type,pt_index = index_tuple
+    x,y = all_points_arrays[pt_type][pt_index]
+    if pt_type==ESTIMATED:
+        return x,y,optimal_zs[pt_index]
+    elif pt_type==FIXED:
+        return x,y,fixed_zs[pt_index] 
+    elif pt_type==DECOUPLED:
+        return x,y,decoupled_zs[pt_index]
+    else: assert False
+
+decoupled_weighted_z_sum = np.zeros(num_decoupled_points)
+decoupled_weight_sum = np.zeros(num_decoupled_points)
+
+for pt in decoupled_group_boundary_points:
+    pt_type,pt_index = pt
+    _,_,boundary_pt_z = get_point_output(pt,None)
+    ind = decoupled_graph_index(pt)
+    assert ind >= num_decoupled_points
+    # n.b. if performance is an issue the method below can take multiple indices at once
+    distances,_ = scipy.sparse.csgraph.dijkstra(decoupled_graph,directed=True,indices=ind)
+    
+    # check the only node with zero distance is the current boundary node
+    (zerodist_node,), = np.where(distances==0)
+    assert zerodist_node==ind 
+    
+    # check all other non-decoupled graph nodes should have distance==inf
+    ogn = other_graph_nodes_only(distances)
+    assert ogn.shape==(num_estimated_points+num_fixed_points,) # all other graph nodes
+    ogn_check = np.zeros(ogn.shape)+np.inf
+    ogn_check[ind-num_decoupled_points]==0
+    assert ogn==ogn_check
+    
+    distances = decoupled_graph_nodes_only(distances)
+    weights = distances**-1
+    decoupled_weighted_z_sum += weights * boundary_pt_z
+    decoupled_weight_sum += weights
+    
+decoupled_zs = decoupled_weighted_z_sum/decoupled_weight_sum
+
 # Reconstruct geometries
+
 print ("Reconstructing geometries")
-xs = all_points[:,0]
-ys = all_points[:,1]
-net_df.geometry = net_df.apply(lambda row: LineString([(xs[pt_index],ys[pt_index],optimal_zs[pt_index]) for pt_index in row.point_indices]),axis=1)
+net_df.geometry = net_df.apply(lambda row: LineString([get_point_output(pt_index,decoupled_zs) for pt_index in row.point_indices]),axis=1)
 del net_df["point_indices"]
 
 print (f"Writing output to {options.outfile}") 
