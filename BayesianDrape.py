@@ -83,6 +83,8 @@ del terrain_xs, terrain_ys, terrain_data, terrain_raster
 def terrain_interpolator(points_to_interpolate):
     # calling contiguous() silences the performance warning from PyTorch
     # swapping dimensions on our definition of points throughout, and ensuring all tensors are created contiguous, gives maybe 10% speed boost - reverting for now as that's premature
+    if not torch.is_tensor(points_to_interpolate):
+        points_to_interpolate = np_to_torch(points_to_interpolate)
     return terrain_interpolator_inner([points_to_interpolate[:,0].contiguous(),points_to_interpolate[:,1].contiguous()])
 
 # Todo: add points to linestrings where they cross raster cells or at least every cell-distance
@@ -99,12 +101,12 @@ ESTIMATED,FIXED,DECOUPLED = range(len(all_points_sets))
 
 point_to_type = {} 
 
-# at feature level, decoupled takes precedence over fixed as this makes sense for draping bridges
+# at feature level, decoupled takes precedence over fixed as people are likely to apply fixes to large flat areas and decouples to smaller features like bridges within them
 both_fixed_decoupled_warning_issued = False
 def get_feature_type(row):
     global both_fixed_decoupled_warning_issued
-    fixed = options.fixfield and row[fixfield]
-    decoupled = options.decouplefield and row[decouplefield]
+    fixed = options.fixfield and row[options.fixfield]
+    decoupled = options.decouplefield and row[options.decouplefield]
     if not both_fixed_decoupled_warning_issued and fixed and decoupled:
         print (f"Input contains rows which are both fixed and decoupled - decoupled takes precedence")
         both_fixed_decoupled_warning_issued = True
@@ -115,7 +117,7 @@ def get_feature_type(row):
     else:
         return ESTIMATED
 
-# conversely at point level, precedence order for endpoints (and hence any point with conflict) is fixed, estimated, decoupled
+# conversely at point level, precedence order for endpoints (the only ones with potential conflict) is fixed, estimated, decoupled
 def set_point_type(coords,feature_type):
     if feature_type == FIXED:
         point_to_type[coords] = FIXED
@@ -123,7 +125,7 @@ def set_point_type(coords,feature_type):
         if coords not in point_to_type or point_to_type[coords] != FIXED:
             point_to_type[coords] = ESTIMATED
     elif feature_type == DECOUPLED:
-        if coords not in point_to_type[coords]:
+        if coords not in point_to_type:
             point_to_type[coords] = DECOUPLED
     else: assert False    
 
@@ -185,9 +187,9 @@ def decoupled_graph_add(decoupled_index,other_type,other_index,dist):
     i1 = decoupled_graph_index(DECOUPLED,decoupled_index)
     i2 = decoupled_graph_index(other_type,other_index)
     # directed graph - boundary points can flow inwards only
-    decoupled_graph[i1,i2] = dist
+    decoupled_graph[i2,i1] = dist
     if other_type == DECOUPLED:
-        decoupled_graph[i2,i1] = dist
+        decoupled_graph[i1,i2] = dist
     else:
         decoupled_group_boundary_points.append((other_type,other_index))
 
@@ -312,7 +314,7 @@ del distance_matrix_estimated_to_fixed
 if len(all_points_arrays[FIXED]):
     fixed_zs = terrain_interpolator(all_points_arrays[FIXED])
 else:
-    fixed_zs = np.zeros(0)
+    fixed_zs = np_to_torch(np.zeros(0))
 
 # Convert everything minus_log_likelihood needs to PyTorch
 all_points_arrays = [np_to_torch(a) for a in all_points_arrays]
@@ -320,7 +322,6 @@ sparse_est_est_neighbour_weights = np_to_torch(sparse_est_est_neighbour_weights)
 sparse_est_est_neighbour_inv_distances = np_to_torch(sparse_est_est_neighbour_inv_distances)
 sparse_est_fix_neighbour_weights = np_to_torch(sparse_est_fix_neighbour_weights)
 sparse_est_fix_neighbour_inv_distances = np_to_torch(sparse_est_fix_neighbour_inv_distances)
-fixed_zs = np_to_torch(fixed_zs)
 
 llcount=0
 def minus_log_likelihood(point_offsets):
@@ -430,9 +431,9 @@ def get_point_output(index_tuple,decoupled_zs):
     pt_type,pt_index = index_tuple
     x,y = all_points_arrays[pt_type][pt_index]
     if pt_type==ESTIMATED:
-        return x,y,optimal_zs[pt_index]
+        return x,y,float(optimal_zs[pt_index])
     elif pt_type==FIXED:
-        return x,y,fixed_zs[pt_index] 
+        return x,y,float(fixed_zs[pt_index])
     elif pt_type==DECOUPLED:
         return x,y,decoupled_zs[pt_index]
     else: assert False
@@ -440,13 +441,15 @@ def get_point_output(index_tuple,decoupled_zs):
 decoupled_weighted_z_sum = np.zeros(num_decoupled_points)
 decoupled_weight_sum = np.zeros(num_decoupled_points)
 
+if decoupled_group_boundary_points:
+    print ("Interpolating decoupled points")
 for pt in decoupled_group_boundary_points:
     pt_type,pt_index = pt
     _,_,boundary_pt_z = get_point_output(pt,None)
-    ind = decoupled_graph_index(pt)
+    ind = decoupled_graph_index(pt_type,pt_index)
     assert ind >= num_decoupled_points
     # n.b. if performance is an issue the method below can take multiple indices at once
-    distances,_ = scipy.sparse.csgraph.dijkstra(decoupled_graph,directed=True,indices=ind)
+    distances = scipy.sparse.csgraph.dijkstra(decoupled_graph,directed=True,indices=ind)
     
     # sanity check: the only node with zero distance is the current boundary node
     (zerodist_node,), = np.where(distances==0)
@@ -456,11 +459,10 @@ for pt in decoupled_group_boundary_points:
     ogn = other_graph_nodes_only(distances)
     assert ogn.shape==(num_estimated_points+num_fixed_points,) 
     ogn_check = np.zeros(ogn.shape)+np.inf
-    ogn_check[ind-num_decoupled_points]==0
-    assert ogn==ogn_check
+    ogn_check[ind-num_decoupled_points]=0
+    assert np.all(ogn==ogn_check)
     
-    distances = decoupled_graph_nodes_only(distances)
-    weights = distances**-1
+    weights = decoupled_graph_nodes_only(distances)**-1
     decoupled_weighted_z_sum += weights * boundary_pt_z
     decoupled_weight_sum += weights
     
