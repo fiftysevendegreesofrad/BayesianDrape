@@ -174,13 +174,13 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     distance_matrix_estimated_to_estimated = lil_matrix((num_estimated_points,num_estimated_points))
     distance_matrix_estimated_to_fixed = lil_matrix((num_estimated_points,num_fixed_points))
 
-    # Build all matrices (third pass through df)
+    # Build all matrices (third pass through data)
     # provided we optimize all points together, we only store distances in one direction
     # otherwise each gradient likelihood is counted twice, which breaks log likelihood
     # if we did ever want to compute log likelihood for a single point, we would need a symmetric distance matrix
 
-    for _,row in net_df.iterrows():
-        xs,ys = row.geometry.coords.xy
+    for geom in geometries:
+        xs,ys = geom.coords.xy
         for point1,point2 in pairwise(zip(xs,ys)):
             type1,index1 = get_point_type_and_index(point1)
             type2,index2 = get_point_type_and_index(point2)
