@@ -300,12 +300,12 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         optimal_zs = terrain_interpolator(final_points)
         final_log_likelihood = -minus_log_likelihood(final_offsets)
 
-        # Print result report
-
+        # Print report on offsets
+        
         offset_distances = ((final_offsets**2).sum(axis=1))**0.5
         mean_offset_dist = offset_distances.mean()
         max_offset_dist = offset_distances.max()
-        print_callback (f"{initial_log_likelihood=}\n{final_log_likelihood=}\n{mean_offset_dist=}\n{max_offset_dist=}")
+        print_callback (f"{mean_offset_dist=}\n{max_offset_dist=}")
 
         # Interpolate decoupled points: iterate through decoupled_group_boundary_points, as they are likely fewer in number than the decoupled points themselves
 
@@ -364,16 +364,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     return BayesianDrapeModel(**return_dict)
     
 
-# Command line tool
-
-if __name__ == "__main__":
-    from optparse import OptionParser
-    import rioxarray # gdal raster is another option 
-    import pandas as pd
-    import geopandas as gp
-
-    # Parse options
-
+def fit_model_from_command_line_options():
     op = OptionParser()
     op.add_option("--TERRAIN-INPUT",dest="terrainfile",help="[REQUIRED] Terrain model",metavar="FILE")
     op.add_option("--POLYLINE-INPUT",dest="shapefile",help="[REQUIRED] Polyline feature class e.g. network or GPS trace",metavar="FILE")
@@ -413,7 +404,7 @@ if __name__ == "__main__":
     if options.fixfield:
         fix_geometries_mask = net_df[options.fixfield]
     else:
-        fixed_geometries_mask = None
+        fix_geometries_mask = None
     if options.decouplefield:
         decouple_geometries_mask = net_df[options.decouplefield]
     else:
@@ -440,7 +431,7 @@ if __name__ == "__main__":
     last_ll = initial_log_likelihood
 
     def callback(x):
-        global last_ll
+        nonlocal last_ll
         ll = float(-model.minus_log_likelihood(x))
         lldiff = abs(ll-last_ll)
         last_ll = ll
@@ -451,10 +442,11 @@ if __name__ == "__main__":
     # setting maxiter=200 gives nice results but can we do better? fixme
     result = minimize(model.minus_log_likelihood,model.initial_guess,callback = callback,bounds=bounds,jac=model.minus_log_likelihood_gradient,options=dict(maxiter=200)) 
     print (f"Finished optimizing: {result['success']=} {result['message']}")
-
+    
     optimizer_results = result["x"]
     final_log_likelihood = -model.minus_log_likelihood(optimizer_results)
-
+    print (f"{initial_log_likelihood=}\n{final_log_likelihood=}\n")
+    
     # Reconstruct geometries
 
     print ("Reconstructing geometries")
@@ -462,3 +454,11 @@ if __name__ == "__main__":
 
     print (f"Writing output to {options.outfile}") 
     net_df.to_file(options.outfile)
+
+if __name__ == "__main__":
+    from optparse import OptionParser
+    import rioxarray # gdal raster is another option 
+    import pandas as pd
+    import geopandas as gp
+    fit_model_from_command_line_options()
+    
