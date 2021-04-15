@@ -30,7 +30,7 @@ slope_prior_scale_default = 2.2
 def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
                 geometries,
                 slope_prior_scale=None,mismatch_prior_std=None,slope_continuity=None,
-                fixed_geometries_mask=None,decoupled_geometries_mask=None,
+                simpledraped_geometries_mask=None,decoupled_geometries_mask=None,
                 use_cuda=False,
                 print_callback=print):
 
@@ -48,8 +48,8 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         slope_continuity=slope_continuity_param_default
 
     # computed parameter defaults
-    if fixed_geometries_mask is None:
-        fixed_geometries_mask = [0]*len(geometries)
+    if simpledraped_geometries_mask is None:
+        simpledraped_geometries_mask = [0]*len(geometries)
     if decoupled_geometries_mask is None:
         decoupled_geometries_mask = [0]*len(geometries)
     if mismatch_prior_std is None:
@@ -76,22 +76,23 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     # Build point model: we represent each linestring with a point index list 
     # point (x,y)s are initially stored in OrderedSets so we can give the same index to matching line endpoints; these OrderedSets are later converted to arrays
     # We define them now so we can simultaneously define an enum for the corresponding point type that belongs in each
+    # FIXED points currently reflects simple-draped only though could be expanded to include 3d geometries in future
 
     all_points_sets = [OrderedSet(),OrderedSet(),OrderedSet()]
     ESTIMATED,FIXED,DECOUPLED = range(len(all_points_sets))
 
     # Feature and point type model (controls behaviour of optimizer at each point)
 
-    # at feature level, decoupled takes precedence over fixed as people are likely to apply fixes to large flat areas and decouples to smaller features like bridges within them
-    def get_feature_type(decoupled,fixed):
+    # at feature level, decoupled takes precedence over simpledraped as people are likely to apply simpledrapes to large flat areas and decouples to smaller features like bridges within them
+    def get_feature_type(decoupled,simpledraped):
         if decoupled:
             return DECOUPLED
-        elif fixed:
+        elif simpledraped:
             return FIXED
         else:
             return ESTIMATED
 
-    # conversely at point level, precedence order for endpoints (the only ones with potential conflict) is fixed, estimated, decoupled. We keep these in a dict to keep track of conflicts.
+    # conversely at point level, precedence order for endpoints (the only ones with potential conflict) is simpledraped, estimated, decoupled. We keep these in a dict to keep track of conflicts.
     point_to_type = {} 
     def set_point_type(coords,feature_type):
         if feature_type == FIXED:
@@ -105,12 +106,12 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         else: assert False    
 
     # first pass through data to resolve point types
-    for geom,decoupled,fixed in zip(geometries,decoupled_geometries_mask,fixed_geometries_mask):
+    for geom,decoupled,simpledraped in zip(geometries,decoupled_geometries_mask,simpledraped_geometries_mask):
         xs,ys = geom.coords.xy
-        feature_type = get_feature_type(decoupled,fixed)
+        feature_type = get_feature_type(decoupled,simpledraped)
         for x,y in zip(xs,ys):
             set_point_type((x,y),feature_type)
-    del decoupled_geometries_mask,fixed_geometries_mask
+    del decoupled_geometries_mask,simpledraped_geometries_mask
     
     # second pass through data to create point model
     point_indices_all_rows = []
@@ -374,7 +375,7 @@ def fit_model_from_command_line_options():
     op.add_option("--SPATIAL-MISMATCH-MAX",dest="mismatch_max",help="Maximum permissible spatial mismatch (in spatial units of projection; defaults to 4x mismatch prior std)",metavar="DISTANCE",type="float")
     op.add_option("--SLOPE-CONTINUITY-PARAM",dest="slope_continuity",help=f"Slope continuity parameter (defaults to {slope_continuity_param_default})",metavar="X",type="float",default=slope_continuity_param_default)
     op.add_option("--GPU",dest="cuda",action="store_true",help="Enable GPU acceleration")
-    op.add_option("--FIX-FIELD",dest="fixfield",help="Instead of estimating heights, perform ordinary drape of features over terrain where FIELDNAME=true",metavar="FIELDNAME")
+    op.add_option("--SIMPLE-DRAPE-FIELD",dest="simpledrapefield",help="Instead of estimating heights, perform ordinary drape of features over terrain where FIELDNAME=true",metavar="FIELDNAME")
     op.add_option("--DECOUPLE-FIELD",dest="decouplefield",help="Instead of estimating heights, decouple features from terrain where FIELDNAME=true (useful for bridges/tunnels)",metavar="FIELDNAME")
     (options,args) = op.parse_args()
     
@@ -398,13 +399,13 @@ def fit_model_from_command_line_options():
     terrain_ys = (np.flip(np.array(terrain_raster.y,np.float64)) )
     terrain_data = (np.flip(terrain_raster.data[0],axis=0).T) # fixme does this generalize to other projections?
     
-    if options.fixfield and options.decouplefield and np.logical_and(net_df[options.fixfield],net_df[options.decouplefield]).any():
-        print ("Input contains rows which are both fixed and decoupled - decoupled takes precedence")
+    if options.simpledrapefield and options.decouplefield and np.logical_and(net_df[options.simpledrapefield],net_df[options.decouplefield]).any():
+        print ("Input contains rows which are both fixed/simple-draped and decoupled - decoupled takes precedence")
         
-    if options.fixfield:
-        fix_geometries_mask = net_df[options.fixfield]
+    if options.simpledrapefield:
+        simpledrape_geometries_mask = net_df[options.simpledrapefield]
     else:
-        fix_geometries_mask = None
+        simpledrape_geometries_mask = None
     if options.decouplefield:
         decouple_geometries_mask = net_df[options.decouplefield]
     else:
@@ -416,7 +417,7 @@ def fit_model_from_command_line_options():
                         slope_prior_scale = options.slope_prior_scale,
                         mismatch_prior_std = options.mismatch_prior_std,
                         slope_continuity = options.slope_continuity,
-                        fixed_geometries_mask = fix_geometries_mask,
+                        simpledraped_geometries_mask = simpledrape_geometries_mask,
                         decoupled_geometries_mask = decouple_geometries_mask,
                         use_cuda = options.cuda)
     
