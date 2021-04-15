@@ -364,8 +364,36 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     BayesianDrapeModel = namedtuple("BayesianDrapeModel",return_dict)
     return BayesianDrapeModel(**return_dict)
     
+def fit_model(model,max_offset_dist=np.inf,print_callback=print):
+    initial_log_likelihood = -model.minus_log_likelihood(model.initial_guess)
+    last_ll = initial_log_likelihood
+
+    def callback(x):
+        nonlocal last_ll
+        ll = float(-model.minus_log_likelihood(x))
+        lldiff = abs(ll-last_ll)
+        last_ll = ll
+        print (f"callback {ll=} {lldiff=}")
+    
+    bounds = Bounds(-max_offset_dist,max_offset_dist) 
+    print_callback ("Starting optimizer")
+    # setting maxiter=200 gives nice results but can we do better? fixme
+    result = minimize(model.minus_log_likelihood,model.initial_guess,callback = callback,bounds=bounds,jac=model.minus_log_likelihood_gradient,options=dict(maxiter=200)) 
+    print_callback (f"Finished optimizing: {result['success']=} {result['message']}")
+    
+    optimizer_results = result["x"]
+    final_log_likelihood = -model.minus_log_likelihood(optimizer_results)
+    print_callback (f"{initial_log_likelihood=}\n{final_log_likelihood=}\n")
+    
+    print_callback ("Reconstructing geometries")
+    return [LineString(geom) for geom in model.reconstruct_geometries_from_optimizer_results(optimizer_results)]
 
 def fit_model_from_command_line_options():
+    from optparse import OptionParser
+    import rioxarray # gdal raster is another option 
+    import pandas as pd
+    import geopandas as gp
+    
     op = OptionParser()
     op.add_option("--TERRAIN-INPUT",dest="terrainfile",help="[REQUIRED] Terrain model",metavar="FILE")
     op.add_option("--POLYLINE-INPUT",dest="shapefile",help="[REQUIRED] Polyline feature class e.g. network or GPS trace",metavar="FILE")
@@ -423,43 +451,14 @@ def fit_model_from_command_line_options():
     
     del terrain_xs,terrain_ys,terrain_data,terrain_raster
     
-    # Run optimizer
-    
     if not options.mismatch_max:
         options.mismatch_max = model.mismatch_prior_std * 4
     
-    initial_log_likelihood = -model.minus_log_likelihood(model.initial_guess)
-    last_ll = initial_log_likelihood
-
-    def callback(x):
-        nonlocal last_ll
-        ll = float(-model.minus_log_likelihood(x))
-        lldiff = abs(ll-last_ll)
-        last_ll = ll
-        print (f"callback {ll=} {lldiff=}")
-    
-    bounds = Bounds(-options.mismatch_max,options.mismatch_max) 
-    print ("Starting optimizer")
-    # setting maxiter=200 gives nice results but can we do better? fixme
-    result = minimize(model.minus_log_likelihood,model.initial_guess,callback = callback,bounds=bounds,jac=model.minus_log_likelihood_gradient,options=dict(maxiter=200)) 
-    print (f"Finished optimizing: {result['success']=} {result['message']}")
-    
-    optimizer_results = result["x"]
-    final_log_likelihood = -model.minus_log_likelihood(optimizer_results)
-    print (f"{initial_log_likelihood=}\n{final_log_likelihood=}\n")
-    
-    # Reconstruct geometries
-
-    print ("Reconstructing geometries")
-    net_df.geometry = [LineString(geom) for geom in model.reconstruct_geometries_from_optimizer_results(optimizer_results)]
+    net_df.geometry = fit_model(model,options.mismatch_max)
 
     print (f"Writing output to {options.outfile}") 
     net_df.to_file(options.outfile)
 
 if __name__ == "__main__":
-    from optparse import OptionParser
-    import rioxarray # gdal raster is another option 
-    import pandas as pd
-    import geopandas as gp
     fit_model_from_command_line_options()
     
