@@ -2,6 +2,7 @@ import BayesianDrape
 import numpy as np
 import geopandas as gp
 import torch,rioxarray
+from torch_interpolations import RegularGridInterpolator
 
 def np_to_torch(x):
     return torch.from_numpy(x)
@@ -40,3 +41,25 @@ def test_log_likelihood_small():
     
 def test_log_likelihood_large():
     lltest("data/biggertest.shp",[35556.77348013957, 35842.87091246876, 36532.27095995685, 37558.64256056091, 38872.721038508236],[-0.09709856, 0.00749611])
+    
+def test_autodiff_cell_boundary():
+    '''Ensure there is still a gradient on boundaries of raster cells'''
+    terrain_raster = rioxarray.open_rasterio("data/all_os50_terrain.tif")
+    terrain_xs = np_to_torch(np.array(terrain_raster.x,np.float64))
+    terrain_ys = np_to_torch(np.flip(np.array(terrain_raster.y,np.float64)).copy() )
+    terrain_data = np_to_torch(np.flip(terrain_raster.data[0],axis=0).T.copy())
+    terrain_interpolator_inner = RegularGridInterpolator((terrain_xs,terrain_ys), terrain_data)
+    
+    def print_point_inter_and_grad(point):
+        pt = np_to_torch(np.array(point,dtype=float))
+        pt.requires_grad = True
+        ptr = pt.reshape([2,1])
+        terr = terrain_interpolator_inner(ptr)
+        terr.backward()
+        grad = pt.grad
+        print (f"{ptr=}\n{terr=}\n{grad=}")
+        assert grad.sum()!=0
+        
+    for point in [(355000,205000),(355025,205025),(355050,205050),(355075,205075)]:
+        print_point_inter_and_grad(point)
+    

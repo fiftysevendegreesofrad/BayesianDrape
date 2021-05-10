@@ -239,7 +239,31 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     # Define posterior log likelihood
 
     # Prepare sparse arrays estimated-to-estimated: two indices into estimated points, weights, inverse distances
-    sparse_est_est_neighbour1s,sparse_est_est_neighbour2s,sparse_est_est_neighbour_distances = scipy.sparse.find(distance_matrix_estimated_to_estimated)
+    sparse_est_est_neighbour1s,sparse_est_est_neighbour2s,sparse_est_est_neighbour_distances = scipy.sparse.find(distance_matrix_estimated_to_estimated) # fixme distance_matrix_estimated_to_estimated maybe shouldn't be a matrix at all? perhaps just a list of tuples with distance, type1,idx2,type2,idx2 hence vaguely polymorphic. and somewhere we process that automagically to a few neighbour-tensor objects containing indices, distance and weight for each type,type combination, all supporting a log likelihood method so vaguely polymorphic. can pop them all in a list to python-iterate in the cuda loop, after we've computed the heights of estimated then decoupled point arrays in order.
+    # alternatively a polymorphic+composite tensor type - used for points (built from type:list dicts) but exposing operations for each type individually too;
+    # able to give a (pair, doesn't need to be integer) index at time of add (actually these are themselves a polymorphic type?)
+    # then we can call compute_heights on this and it just works
+    # we then need to do heightdiff->ll calculation for all possible pairings, efficiently. which means somehow making a list of functions that reach inside the polymorphic point tensor individual types?
+    # if we could do efficient array-with-array-indexing of my composite type then we'd be sorted? maybe we can do that? consider that each index is 2d. when you index one polymorphic array with another polymorphic-index array then that's efficient. may need another layer of indirection to the pairs list is all. 
+    
+    # treating each point index as a different type then we could compose them pairwise into a polymorphic tensor which would auto-define the list of combinations we need to test. each index-pair type needs at minimum a get_heights method which dispatches to the respective points. this seems perverse compared to just having some efficient indexing process for all the point heights we want in the polymorphic tensor (twice). such an indexing process would need to preserve the order of the index, though, or pairs would be mismatched. is that even possible efficiently? could test time for output[index_type==i]=pool[index_nums[index_type==i]] for i in types. these are the alternatives. what's on the market already?
+    
+    # There are n+1 index types, 1 for each component and one for the union. Something special about how the component type pair proposal reflects the underlying structure of the polymorphic hence leading to efficiency, does it generalize? Also something special about a pairwise index that cares about matching but not order, does that generalize? Are both a case of indexing polymorphic with polymorphic?
+    
+    # Tensor relation al mapping? Search. Does this crop up in orm? Is trm the general concept i need all pairs but unordered to implement? Is this just a tensor join?
+    # yes! this is the concept we can reasonably abstract; efficient join of a polymorphic tensor. can implement with foreign key objects inside the sqlalchemy type class.
+    # read how relational databses handle polymorphism
+    
+    # or should we look at how dataframes do joins
+    
+    # torch indexing with tensor is still a view. how efficient is it? if it's ok then we can avoid joins altogether; just make an index-with-array equivalent for the polymorphic one.
+    
+    # TOTAL other plan: don't go polymorphic at all but have a single tensor of zs which is filled by tensor-with-array indexing for each type of z we compute? could radically simplify things.
+    # IF INDEX OPS ARE REASONABLY EFFICIENT COMPARED TO LOOPING THROUGH ALL ITEMS, THERE'S NO NEED FOR A FANCY JOIN
+    # BENCHMARK CODE THEN REFACTOR ALL STORAGE AS points[] and point_types[] arrays THIS WILL TELL ME.
+    
+    # alternatively bayesiandrape has to define a few type1index-type2index composite types, add ll functions to each, and a polymorphic pairs list, on which the ll function is called and dispatched to each
+    
     sparse_est_est_neighbour_weights = sparse_est_est_neighbour_distances / mean_estimated_segment_length
     sparse_est_est_neighbour_inv_distances = np.asarray(distance_matrix_estimated_to_estimated[sparse_est_est_neighbour1s,sparse_est_est_neighbour2s])[0]**-1
     del sparse_est_est_neighbour_distances

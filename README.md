@@ -87,3 +87,5 @@ https://www.colorado.edu/earthlab/2019/01/03/publishing-your-python-code-pip-and
 could have different priors for x and y mismatch? half cell size in each case
 
 python -m pytest
+
+RESIDS seem to get worse with scatter plots - this is very short links being flattened by bayes especially when they are dead ends.
