@@ -89,3 +89,6 @@ could have different priors for x and y mismatch? half cell size in each case
 python -m pytest
 
 RESIDS seem to get worse with scatter plots - this is very short links being flattened by bayes especially when they are dead ends.
+
+time code in test_all.py. before refactor 0.0082
+after 0.030! not so good. is that the gradient or the indexing? could it be reuse of n1_zs n2_zs?

@@ -170,11 +170,22 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         else:
             decoupled_group_boundary_points.append((other_type,other_index))
 
-    # Initialize point inverse distance matrices, which also serve as adjacency matrices
-
-    distance_matrix_estimated_to_estimated = lil_matrix((num_estimated_points,num_estimated_points))
-    distance_matrix_estimated_to_fixed = lil_matrix((num_estimated_points,num_fixed_points))
-
+    # Storage for all gradient tests we will conduct - a bit like a sparse adjacency matrix but with types+indices
+    gradient_test_p1_types = []
+    gradient_test_p1_indices = []
+    gradient_test_p2_types = []
+    gradient_test_p2_indices = []
+    gradient_test_distances = []
+    def add_gradient_test(type1,index1,type2,index2,dist):
+        assert index1<len(all_points_sets[type1])
+        assert index2<len(all_points_sets[type2])
+        assert type(dist)==float
+        gradient_test_p1_types.append(type1)
+        gradient_test_p1_indices.append(index1)
+        gradient_test_p2_types.append(type2)
+        gradient_test_p2_indices.append(index2)
+        gradient_test_distances.append(dist)
+    
     # Build all matrices (third pass through data)
     # provided we optimize all points together, we only store distances in one direction
     # otherwise each gradient likelihood is counted twice, which breaks log likelihood
@@ -189,12 +200,13 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
             (x1,y1),(x2,y2) = point1,point2
             dist = ((x2-x1)**2+(y2-y1)**2)**0.5
             assert dist>0
+            # FIXME this logic all to change later
             if (type1,type2)==(ESTIMATED,ESTIMATED):
-                distance_matrix_estimated_to_estimated[index1,index2]=dist
+                add_gradient_test(type1,index1,type2,index2,dist)
             elif (type1,type2)==(ESTIMATED,FIXED):
-                distance_matrix_estimated_to_fixed[index1,index2]=dist
+                add_gradient_test(type1,index1,type2,index2,dist)
             elif (type1,type2)==(FIXED,ESTIMATED):
-                distance_matrix_estimated_to_fixed[index2,index1]=dist
+                add_gradient_test(type1,index1,type2,index2,dist)
             elif type1==DECOUPLED:
                 decoupled_graph_add(index1,type2,index2,dist)
             elif type2==DECOUPLED:
@@ -205,16 +217,18 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
 
     all_points_arrays = [np.array(s) for s in all_points_sets]
     del all_points_sets,point_to_type
-    distance_matrix_estimated_to_estimated = distance_matrix_estimated_to_estimated.tocsr()
-    distance_matrix_estimated_to_fixed = distance_matrix_estimated_to_fixed.tocsr()
     decoupled_graph = decoupled_graph.tocsr()
+    gradient_test_p1_types = np.array(gradient_test_p1_types,dtype=np.ubyte)
+    gradient_test_p1_indices = np.array(gradient_test_p1_indices,dtype=np.longlong)
+    gradient_test_p2_types = np.array(gradient_test_p2_types,dtype=np.ubyte)
+    gradient_test_p2_indices = np.array(gradient_test_p2_indices,dtype=np.longlong)
+    gradient_test_distances = np.array(gradient_test_distances)
+    num_gradient_tests = len(gradient_test_distances)
 
-    all_estimated_segment_lengths = np.concatenate((distance_matrix_estimated_to_estimated.data,distance_matrix_estimated_to_fixed.data))
-    mean_estimated_segment_length = all_estimated_segment_lengths.mean()
-    print_callback("Minimum estimated segment length",all_estimated_segment_lengths.min())
+    mean_estimated_segment_length = gradient_test_distances.mean()
+    print_callback("Minimum estimated segment length",gradient_test_distances.min())
     print_callback("Mean estimated segment length",mean_estimated_segment_length)
-    del all_estimated_segment_lengths
-        
+            
     # Define priors - both implemented by hand for speed and compatibility with autodiff
 
     # Exponential grade prior
@@ -238,85 +252,50 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
             
     # Define posterior log likelihood
 
-    # Prepare sparse arrays estimated-to-estimated: two indices into estimated points, weights, inverse distances
-    sparse_est_est_neighbour1s,sparse_est_est_neighbour2s,sparse_est_est_neighbour_distances = scipy.sparse.find(distance_matrix_estimated_to_estimated) # fixme distance_matrix_estimated_to_estimated maybe shouldn't be a matrix at all? perhaps just a list of tuples with distance, type1,idx2,type2,idx2 hence vaguely polymorphic. and somewhere we process that automagically to a few neighbour-tensor objects containing indices, distance and weight for each type,type combination, all supporting a log likelihood method so vaguely polymorphic. can pop them all in a list to python-iterate in the cuda loop, after we've computed the heights of estimated then decoupled point arrays in order.
-    # alternatively a polymorphic+composite tensor type - used for points (built from type:list dicts) but exposing operations for each type individually too;
-    # able to give a (pair, doesn't need to be integer) index at time of add (actually these are themselves a polymorphic type?)
-    # then we can call compute_heights on this and it just works
-    # we then need to do heightdiff->ll calculation for all possible pairings, efficiently. which means somehow making a list of functions that reach inside the polymorphic point tensor individual types?
-    # if we could do efficient array-with-array-indexing of my composite type then we'd be sorted? maybe we can do that? consider that each index is 2d. when you index one polymorphic array with another polymorphic-index array then that's efficient. may need another layer of indirection to the pairs list is all. 
-    
-    # treating each point index as a different type then we could compose them pairwise into a polymorphic tensor which would auto-define the list of combinations we need to test. each index-pair type needs at minimum a get_heights method which dispatches to the respective points. this seems perverse compared to just having some efficient indexing process for all the point heights we want in the polymorphic tensor (twice). such an indexing process would need to preserve the order of the index, though, or pairs would be mismatched. is that even possible efficiently? could test time for output[index_type==i]=pool[index_nums[index_type==i]] for i in types. these are the alternatives. what's on the market already?
-    
-    # There are n+1 index types, 1 for each component and one for the union. Something special about how the component type pair proposal reflects the underlying structure of the polymorphic hence leading to efficiency, does it generalize? Also something special about a pairwise index that cares about matching but not order, does that generalize? Are both a case of indexing polymorphic with polymorphic?
-    
-    # Tensor relation al mapping? Search. Does this crop up in orm? Is trm the general concept i need all pairs but unordered to implement? Is this just a tensor join?
-    # yes! this is the concept we can reasonably abstract; efficient join of a polymorphic tensor. can implement with foreign key objects inside the sqlalchemy type class.
-    # read how relational databses handle polymorphism
-    
-    # or should we look at how dataframes do joins
-    
-    # torch indexing with tensor is still a view. how efficient is it? if it's ok then we can avoid joins altogether; just make an index-with-array equivalent for the polymorphic one.
-    
-    # TOTAL other plan: don't go polymorphic at all but have a single tensor of zs which is filled by tensor-with-array indexing for each type of z we compute? could radically simplify things.
-    # IF INDEX OPS ARE REASONABLY EFFICIENT COMPARED TO LOOPING THROUGH ALL ITEMS, THERE'S NO NEED FOR A FANCY JOIN
-    # BENCHMARK CODE THEN REFACTOR ALL STORAGE AS points[] and point_types[] arrays THIS WILL TELL ME.
-    
-    # alternatively bayesiandrape has to define a few type1index-type2index composite types, add ll functions to each, and a polymorphic pairs list, on which the ll function is called and dispatched to each
-    
-    sparse_est_est_neighbour_weights = sparse_est_est_neighbour_distances / mean_estimated_segment_length
-    sparse_est_est_neighbour_inv_distances = np.asarray(distance_matrix_estimated_to_estimated[sparse_est_est_neighbour1s,sparse_est_est_neighbour2s])[0]**-1
-    del sparse_est_est_neighbour_distances
-    del distance_matrix_estimated_to_estimated
+    # Prepare arrays for likelihood tests
+    gradient_test_weights = np_to_torch(gradient_test_distances / mean_estimated_segment_length)
+    gradient_test_inv_distances = np_to_torch(gradient_test_distances**-1)
+    del gradient_test_distances
+    all_points_arrays = [np_to_torch(a) for a in all_points_arrays]
 
-    # Prepare sparse arrays estimated-to-fixed: indices into fixed and estimated points, weights, inverse distances
-    sparse_est_fix_neighbour1s,sparse_est_fix_neighbour2s,sparse_est_fix_neighbour_distances = scipy.sparse.find(distance_matrix_estimated_to_fixed)
-    sparse_est_fix_neighbour_weights = sparse_est_fix_neighbour_distances / mean_estimated_segment_length
-    if len(sparse_est_fix_neighbour_distances):
-        sparse_est_fix_neighbour_inv_distances = np.asarray(distance_matrix_estimated_to_fixed[sparse_est_fix_neighbour1s,sparse_est_fix_neighbour2s])[0]**-1
-    else:
-        sparse_est_fix_neighbour_inv_distances = np.zeros(0) # numpy zero length arrays must be 0-dimensional, which is inconvenient
-    del sparse_est_fix_neighbour_distances
-    del distance_matrix_estimated_to_fixed
+    # Allocate storage for neighbour1_zs and neighbour2_zs - necessary if we stick to array ops
+    n1_zs = np_to_torch(np.zeros(num_gradient_tests))
+    n2_zs = np_to_torch(np.zeros(num_gradient_tests))
+        
     if len(all_points_arrays[FIXED]):
         fixed_zs = terrain_interpolator(all_points_arrays[FIXED])
-    else:
-        fixed_zs = np_to_torch(np.zeros(0))
-
-    # Convert everything minus_log_likelihood needs to PyTorch
-    all_points_arrays = [np_to_torch(a) for a in all_points_arrays]
-    sparse_est_est_neighbour_weights = np_to_torch(sparse_est_est_neighbour_weights)
-    sparse_est_est_neighbour_inv_distances = np_to_torch(sparse_est_est_neighbour_inv_distances)
-    sparse_est_fix_neighbour_weights = np_to_torch(sparse_est_fix_neighbour_weights)
-    sparse_est_fix_neighbour_inv_distances = np_to_torch(sparse_est_fix_neighbour_inv_distances)
-
+        n1_zs[gradient_test_p1_types==FIXED] = fixed_zs[gradient_test_p1_indices]
+        n2_zs[gradient_test_p2_types==FIXED] = fixed_zs[gradient_test_p2_indices]
+    
+    # fixme
+    assert (gradient_test_p1_types!=DECOUPLED).all()
+    assert (gradient_test_p2_types!=DECOUPLED).all()
+    
     def minus_log_likelihood(point_offsets):
         if not torch.is_tensor(point_offsets):
             point_offsets = np_to_torch(point_offsets)
         point_offsets = torch.reshape(point_offsets,all_points_arrays[ESTIMATED].shape) # as optimize flattens point_offsets
         
-        # Log likelihood of grades between all neighbouring pairs of estimated points
         estimated_zs = terrain_interpolator(all_points_arrays[ESTIMATED] + point_offsets)
-        est_est_neighbour_heightdiffs = abs(estimated_zs[sparse_est_est_neighbour1s]-estimated_zs[sparse_est_est_neighbour2s]) 
-        est_est_neighbour_grades = est_est_neighbour_heightdiffs*sparse_est_est_neighbour_inv_distances
-        est_est_neighbour_likelihood = (grade_logpdf(est_est_neighbour_grades)*sparse_est_est_neighbour_weights).sum()
         
-        # Log likelihood of grades between all estimated-fixed point pairs
-        est_fix_neighbour_heightdiffs = abs(estimated_zs[sparse_est_fix_neighbour1s]-fixed_zs[sparse_est_fix_neighbour2s]) 
-        est_fix_neighbour_grades = est_fix_neighbour_heightdiffs*sparse_est_fix_neighbour_inv_distances
-        est_fix_neighbour_likelihood = (grade_logpdf(est_fix_neighbour_grades)*sparse_est_fix_neighbour_weights).sum()
+        n1_zs[gradient_test_p1_types==ESTIMATED] = estimated_zs[gradient_test_p1_indices]
+        n2_zs[gradient_test_p2_types==ESTIMATED] = estimated_zs[gradient_test_p2_indices]
+        
+        neighbour_heightdiffs = abs(n1_zs-n2_zs)
+        neighbour_grades = neighbour_heightdiffs*gradient_test_inv_distances
+        neighbour_likelihood = (grade_logpdf(neighbour_grades)*gradient_test_weights).sum()
         
         # Log likelihood of point offsets
         offset_square_distances = ((point_offsets**2).sum(axis=1))
         offset_likelihood = squareoffset_logpdf(offset_square_distances).sum()
 
-        return -(est_est_neighbour_likelihood + est_fix_neighbour_likelihood + offset_likelihood)
+        return -(neighbour_likelihood + offset_likelihood)
 
     def minus_log_likelihood_gradient(point_offsets):
         if not torch.is_tensor(point_offsets):
             point_offsets = np_to_torch(point_offsets)
         point_offsets.requires_grad = True
-        minus_log_likelihood(point_offsets).backward()
+        minus_log_likelihood(point_offsets).backward(retain_graph=True)
         return point_offsets.grad
         
     def reconstruct_geometries(opt_results):
