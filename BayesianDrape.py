@@ -60,7 +60,10 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     terrain_xs = np_to_torch(terrain_index_xs.copy())
     terrain_ys = np_to_torch(terrain_index_ys.copy())
     terrain_data = np_to_torch(terrain_zs.copy())
-    terrain_interpolator_inner = RegularGridInterpolator((terrain_xs,terrain_ys), terrain_data)
+    terrain_min_height = float(terrain_data.min())
+    terrain_max_height = float(terrain_data.max())
+    print_callback(f"Terrain height range from {terrain_min_height} to {terrain_max_height}")
+    terrain_interpolator_not_pytorch = RegularGridInterpolator((terrain_xs,terrain_ys), terrain_data)
     del terrain_xs, terrain_ys, terrain_data
     
     def terrain_interpolator(points_to_interpolate):
@@ -68,7 +71,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         # swapping dimensions on our definition of points throughout, and ensuring all tensors are created contiguous, gives maybe 10% speed boost - reverting for now as that's premature
         if not torch.is_tensor(points_to_interpolate):
             points_to_interpolate = np_to_torch(points_to_interpolate)
-        return terrain_interpolator_inner([points_to_interpolate[:,0].contiguous(),points_to_interpolate[:,1].contiguous()])
+        return terrain_interpolator_not_pytorch([points_to_interpolate[:,0].contiguous(),points_to_interpolate[:,1].contiguous()])
 
     # Todo: add points to linestrings where they cross raster cells or at least every cell-distance
     # (latter may make more sense as more expensive to compute gradients at cell boundaries)
@@ -200,21 +203,16 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
             (x1,y1),(x2,y2) = point1,point2
             dist = ((x2-x1)**2+(y2-y1)**2)**0.5
             assert dist>0
-            # FIXME this logic all to change later
-            if (type1,type2)==(ESTIMATED,ESTIMATED):
+            
+            if (type1,type2)!=(FIXED,FIXED):
                 add_gradient_test(type1,index1,type2,index2,dist)
-            elif (type1,type2)==(ESTIMATED,FIXED):
-                add_gradient_test(type1,index1,type2,index2,dist)
-            elif (type1,type2)==(FIXED,ESTIMATED):
-                add_gradient_test(type1,index1,type2,index2,dist)
-            elif type1==DECOUPLED:
+                
+            if type1==DECOUPLED:
                 decoupled_graph_add(index1,type2,index2,dist)
             elif type2==DECOUPLED:
                 assert type1!=DECOUPLED # handled above
                 decoupled_graph_add(index2,type1,index1,dist)
-            else: 
-                assert (type1,type2)==(FIXED,FIXED) # no need to store
-
+            
     all_points_arrays = [np.array(s) for s in all_points_sets]
     del all_points_sets,point_to_type
     decoupled_graph = decoupled_graph.tocsr()
@@ -229,11 +227,45 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     print_callback("Minimum estimated segment length",gradient_test_distances.min())
     print_callback("Mean estimated segment length",mean_estimated_segment_length)
             
+    def init_guess_decoupled_zs():
+        '''Distance weighted average of simple drape zs of boundary points'''
+        decoupled_weighted_z_sum = np.zeros(num_decoupled_points)
+        decoupled_weight_sum = np.zeros(num_decoupled_points)
+
+        for pt in decoupled_group_boundary_points:
+            pt_type,pt_index = pt
+            pt_x,pt_y = all_points_arrays[pt_type][pt_index]
+            boundary_pt_z = float(terrain_interpolator(np.array([[pt_x,pt_y]]))[0]) #  could do these all together if performance ever a problem
+            ind = decoupled_graph_index(pt_type,pt_index)
+            assert ind >= num_decoupled_points
+            # n.b. if performance is ever an issue the method below can take multiple indices at once
+            distances = scipy.sparse.csgraph.dijkstra(decoupled_graph,directed=True,indices=ind)
+            
+            # sanity check: the only node with zero distance is the current boundary node
+            (zerodist_node,), = np.where(distances==0)
+            assert zerodist_node==ind 
+            
+            # sanity check: all other non-decoupled graph nodes should have distance==inf
+            ogn = other_graph_nodes_only(distances)
+            assert ogn.shape==(num_estimated_points+num_fixed_points,) 
+            ogn_check = np.zeros(ogn.shape)+np.inf
+            ogn_check[ind-num_decoupled_points]=0
+            assert np.all(ogn==ogn_check)
+            
+            weights = decoupled_graph_nodes_only(distances)**-1
+            decoupled_weighted_z_sum += weights * boundary_pt_z
+            decoupled_weight_sum += weights
+            
+        return decoupled_weighted_z_sum/decoupled_weight_sum    
+            
     # Define priors - both implemented by hand for speed and compatibility with autodiff
 
+    print_callback(f"Spatial mismatch prior scale is {mismatch_prior_std}")
+    print_callback(f"Slope continuity prior scale (expressed as grade) is {slope_continuity*100:.1f}%")
+    
     # Exponential grade prior
     grade_scale = np.tan(slope_prior_scale*np.pi/180)
-    print_callback(f"Slope prior scale of {slope_prior_scale}\N{DEGREE SIGN} gives grade of {grade_scale:.2f}%")
+    print_callback(f"Slope prior scale of {slope_prior_scale}\N{DEGREE SIGN} gives grade of {grade_scale*100:.1f}%")
     grade_exp_dist_lambda = 1/grade_scale
     
     sc = slope_continuity * grade_exp_dist_lambda
@@ -263,25 +295,39 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     else:
         fixed_zs = torch.zeros(0,dtype=torch.double)
     
-    # fixme
-    assert (gradient_test_p1_types!=DECOUPLED).all()
-    assert (gradient_test_p2_types!=DECOUPLED).all()
-    
-    def minus_log_likelihood(point_offsets):
-        if not torch.is_tensor(point_offsets):
-            point_offsets = np_to_torch(point_offsets)
-        point_offsets = torch.reshape(point_offsets,all_points_arrays[ESTIMATED].shape) # as optimize flattens point_offsets
-
-        n1_zs = torch.zeros(num_gradient_tests,dtype=torch.double)
-        n2_zs = torch.zeros(num_gradient_tests,dtype=torch.double)
+    def unpack_opt_params(opt_params):
+        if not torch.is_tensor(opt_params): # may be the case if called from something other than the optimizer
+            opt_params = np_to_torch(opt_params)
+        assert len(opt_params)==2*num_estimated_points+num_decoupled_points
+        point_offsets = torch.reshape(opt_params[0:num_estimated_points*2],all_points_arrays[ESTIMATED].shape)
+        decoupled_zs = opt_params[num_estimated_points*2:]
+        return point_offsets,decoupled_zs
         
-        n1_zs[gradient_test_p1_types==FIXED] = fixed_zs[gradient_test_p1_indices[gradient_test_p1_types==FIXED]] # fixme any faster to precompute these index arrays?
-        n2_zs[gradient_test_p2_types==FIXED] = fixed_zs[gradient_test_p2_indices[gradient_test_p2_types==FIXED]]
+    def init_opt_params():
+        point_offsets = np_to_torch(np.zeros((num_estimated_points*2),float))
+        decoupled_zs = np_to_torch(init_guess_decoupled_zs())
+        return torch.cat((point_offsets,decoupled_zs))
+        
+    def pack_optim_bounds(max_offset_dist):
+        offset_bounds_lower = np.zeros(num_estimated_points*2)-max_offset_dist
+        offset_bounds_upper = np.zeros(num_estimated_points*2)+max_offset_dist
+        decoupled_bounds_lower = np.zeros(num_decoupled_points)+terrain_min_height
+        decoupled_bounds_upper = np.zeros(num_decoupled_points)+terrain_max_height
+        return np.concatenate((offset_bounds_lower,decoupled_bounds_lower)),np.concatenate((offset_bounds_upper,decoupled_bounds_upper))
+    
+    def minus_log_likelihood(opt_params):
+        point_offsets,decoupled_zs = unpack_opt_params(opt_params)
         
         estimated_zs = terrain_interpolator(all_points_arrays[ESTIMATED] + point_offsets)
         
+        n1_zs = torch.zeros(num_gradient_tests,dtype=torch.double)
+        n2_zs = torch.zeros(num_gradient_tests,dtype=torch.double)
+        n1_zs[gradient_test_p1_types==FIXED] = fixed_zs[gradient_test_p1_indices[gradient_test_p1_types==FIXED]] # fixme any faster to precompute these index arrays? possibly in polymorphic tensor
+        n2_zs[gradient_test_p2_types==FIXED] = fixed_zs[gradient_test_p2_indices[gradient_test_p2_types==FIXED]]
         n1_zs[gradient_test_p1_types==ESTIMATED] = estimated_zs[gradient_test_p1_indices[gradient_test_p1_types==ESTIMATED]]
         n2_zs[gradient_test_p2_types==ESTIMATED] = estimated_zs[gradient_test_p2_indices[gradient_test_p2_types==ESTIMATED]]
+        n1_zs[gradient_test_p1_types==DECOUPLED] = decoupled_zs[gradient_test_p1_indices[gradient_test_p1_types==DECOUPLED]]
+        n2_zs[gradient_test_p2_types==DECOUPLED] = decoupled_zs[gradient_test_p2_indices[gradient_test_p2_types==DECOUPLED]]
         
         neighbour_heightdiffs = abs(n1_zs-n2_zs)
         neighbour_grades = neighbour_heightdiffs*gradient_test_inv_distances
@@ -293,78 +339,47 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
 
         return -(neighbour_likelihood + offset_likelihood)
 
-    def minus_log_likelihood_gradient(point_offsets):
-        if not torch.is_tensor(point_offsets):
-            point_offsets = np_to_torch(point_offsets)
-        point_offsets.requires_grad = True
-        minus_log_likelihood(point_offsets).backward() 
-        return point_offsets.grad
+    def minus_log_likelihood_gradient(opt_params):
+        if not torch.is_tensor(opt_params):
+            opt_params = np_to_torch(opt_params)
+        opt_params.requires_grad = True
+        minus_log_likelihood(opt_params).backward() 
+        return opt_params.grad
         
     def reconstruct_geometries(opt_results):
-        final_offsets = opt_results.reshape(all_points_arrays[ESTIMATED].shape)
-        final_points = all_points_arrays[ESTIMATED] + final_offsets
-        optimal_zs = terrain_interpolator(final_points)
-        final_log_likelihood = -minus_log_likelihood(final_offsets)
-
-        # Print report on offsets
+        final_offsets,final_decoupled_zs = unpack_opt_params(opt_results)
+        final_log_likelihood = -minus_log_likelihood(opt_results)
+        final_estimated_zs = terrain_interpolator(all_points_arrays[ESTIMATED] + final_offsets)
         
+        # Print report on offsets
         offset_distances = ((final_offsets**2).sum(axis=1))**0.5
-        mean_offset_dist = offset_distances.mean()
-        max_offset_dist = offset_distances.max()
+        mean_offset_dist = float(offset_distances.mean())
+        max_offset_dist = float(offset_distances.max())
         print_callback (f"{mean_offset_dist=}\n{max_offset_dist=}")
 
         # Interpolate decoupled points: iterate through decoupled_group_boundary_points, as they are likely fewer in number than the decoupled points themselves
 
-        def get_point_output(index_tuple,decoupled_zs):
+        def get_point_output(index_tuple):
             pt_type,pt_index = index_tuple
             x,y = all_points_arrays[pt_type][pt_index]
             if pt_type==ESTIMATED:
-                return x,y,float(optimal_zs[pt_index])
+                return x,y,float(final_estimated_zs[pt_index])
             elif pt_type==FIXED:
                 return x,y,float(fixed_zs[pt_index])
             elif pt_type==DECOUPLED:
-                return x,y,decoupled_zs[pt_index]
+                return x,y,final_decoupled_zs[pt_index]
             else: assert False
 
-        decoupled_weighted_z_sum = np.zeros(num_decoupled_points)
-        decoupled_weight_sum = np.zeros(num_decoupled_points)
-
-        if decoupled_group_boundary_points:
-            print ("Interpolating decoupled points")
-        for pt in decoupled_group_boundary_points:
-            pt_type,pt_index = pt
-            _,_,boundary_pt_z = get_point_output(pt,None)
-            ind = decoupled_graph_index(pt_type,pt_index)
-            assert ind >= num_decoupled_points
-            # n.b. if performance is an issue the method below can take multiple indices at once
-            distances = scipy.sparse.csgraph.dijkstra(decoupled_graph,directed=True,indices=ind)
-            
-            # sanity check: the only node with zero distance is the current boundary node
-            (zerodist_node,), = np.where(distances==0)
-            assert zerodist_node==ind 
-            
-            # sanity check: all other non-decoupled graph nodes should have distance==inf
-            ogn = other_graph_nodes_only(distances)
-            assert ogn.shape==(num_estimated_points+num_fixed_points,) 
-            ogn_check = np.zeros(ogn.shape)+np.inf
-            ogn_check[ind-num_decoupled_points]=0
-            assert np.all(ogn==ogn_check)
-            
-            weights = decoupled_graph_nodes_only(distances)**-1
-            decoupled_weighted_z_sum += weights * boundary_pt_z
-            decoupled_weight_sum += weights
-            
-        decoupled_zs = decoupled_weighted_z_sum/decoupled_weight_sum
-        
-        return [LineString([get_point_output(pt_index,decoupled_zs) for pt_index in row_point_indices]) for row_point_indices in point_indices_all_rows]
+        return [LineString([get_point_output(pt_index) for pt_index in row_point_indices]) for row_point_indices in point_indices_all_rows]
     
     return_dict = dict(grade_logpdf=grade_logpdf,
                   squareoffset_logpdf=squareoffset_logpdf,
                   minus_log_likelihood=lambda x: float(minus_log_likelihood(x)),
                   minus_log_likelihood_gradient=minus_log_likelihood_gradient,
-                  initial_guess=np_to_torch(np.zeros((num_estimated_points*2),float)),
+                  initial_guess=init_opt_params(),
                   reconstruct_geometries_from_optimizer_results=reconstruct_geometries,
-                  mismatch_prior_std=mismatch_prior_std
+                  mismatch_prior_std=mismatch_prior_std,
+                  optim_bounds = pack_optim_bounds
                   )
     BayesianDrapeModel = namedtuple("BayesianDrapeModel",return_dict)
     return BayesianDrapeModel(**return_dict)
@@ -372,24 +387,25 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
 def fit_model(model,max_offset_dist=np.inf,print_callback=print):
     initial_log_likelihood = -model.minus_log_likelihood(model.initial_guess)
     last_ll = initial_log_likelihood
-
+    callback_count = 0
+    
     def callback(x):
-        nonlocal last_ll
+        nonlocal last_ll,callback_count
+        callback_count += 1
         ll = float(-model.minus_log_likelihood(x))
         lldiff = abs(ll-last_ll)
         last_ll = ll
-        print (f"callback {ll=} {lldiff=}")
+        print_callback (f"Optimizing: iteration {callback_count} log likelihood = {ll} (-{lldiff})          \r",end="")
     
-    bounds = Bounds(-max_offset_dist,max_offset_dist) 
     print_callback ("Starting optimizer")
+    lower_bounds,upper_bounds = model.optim_bounds(max_offset_dist)
     # setting maxiter=200 gives nice results but can we do better? fixme
-    result = minimize(model.minus_log_likelihood,model.initial_guess,callback = callback,bounds=bounds,jac=model.minus_log_likelihood_gradient,options=dict(maxiter=200)) 
-    print_callback (f"Finished optimizing: {result['success']=} {result['message']}")
+    result = minimize(model.minus_log_likelihood,model.initial_guess,callback = callback,bounds=Bounds(lower_bounds,upper_bounds),jac=model.minus_log_likelihood_gradient,options=dict(maxiter=200)) 
+    print_callback (f"\nFinished optimizing: {result['success']=} {result['message']}")
     
     optimizer_results = result["x"]
     final_log_likelihood = -model.minus_log_likelihood(optimizer_results)
     print_callback (f"{initial_log_likelihood=}\n{final_log_likelihood=}\n")
-    
     print_callback ("Reconstructing geometries")
     return [LineString(geom) for geom in model.reconstruct_geometries_from_optimizer_results(optimizer_results)]
 

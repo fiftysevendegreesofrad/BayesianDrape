@@ -38,6 +38,8 @@ python BayesianDrape.py --TERRAIN-INPUT=data/all_os50_terrain.tif --POLYLINE-INP
 
 python BayesianDrape.py --TERRAIN-INPUT=data/all_os50_terrain.tif --POLYLINE-INPUT=data/bridge_fix_test1.shp --OUTPUT=data/test_output.shp --SIMPLE-DRAPE-FIELD=fix --DECOUPLE-FIELD=bridge
 
+python BayesianDrape.py --TERRAIN-INPUT=data/all_os50_terrain.tif --POLYLINE-INPUT=data/bridge_fix_test1.shp --OUTPUT=data/fix_test_out2.shp --SIMPLE-DRAPE-FIELD=fix --DECOUPLE-FIELD=bridge
+
 Slope prior should be linear composable?  and length weighted. Discuss meaning of deviation from exp distribution. But what is right segment length? Autocorrelation? Adjacent segments in single point case?
 
 Auto correlation of heights isn't much concern because each parameter only influences 1 height mainly. Is this a general finding?
@@ -92,3 +94,8 @@ RESIDS seem to get worse with scatter plots - this is very short links being fla
 
 time code in test_all.py. before refactor 0.0082
 after 0.030! not so good. could it be reuse of n1_zs n2_zs requiring torch backtrace to preserve the graph? yes. fixed -> time=0.008. 
+
+TODO split lines at appropriate points
+
+weird - bridge test out looks to have changed priors even when not decoupled
+todo retry it with old checkout to confirm
