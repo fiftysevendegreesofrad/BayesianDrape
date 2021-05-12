@@ -97,5 +97,3 @@ after 0.030! not so good. could it be reuse of n1_zs n2_zs requiring torch backt
 
 TODO split lines at appropriate points
 
-weird - bridge test out looks to have changed priors even when not decoupled
-todo retry it with old checkout to confirm

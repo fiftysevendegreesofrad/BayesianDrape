@@ -55,14 +55,14 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     if mismatch_prior_std is None:
         cellsizex = abs(terrain_index_xs[1]-terrain_index_xs[0])
         cellsizey = abs(terrain_index_ys[1]-terrain_index_ys[0])
-        mismatch_prior_std = max(cellsizex,cellsizey)
+        mismatch_prior_std = max(cellsizex,cellsizey)/2
     
     terrain_xs = np_to_torch(terrain_index_xs.copy())
     terrain_ys = np_to_torch(terrain_index_ys.copy())
     terrain_data = np_to_torch(terrain_zs.copy())
     terrain_min_height = float(terrain_data.min())
     terrain_max_height = float(terrain_data.max())
-    print_callback(f"Terrain height range from {terrain_min_height} to {terrain_max_height}")
+    print_callback(f"Terrain height range from {terrain_min_height:.2f} to {terrain_max_height:.2f}")
     terrain_interpolator_not_pytorch = RegularGridInterpolator((terrain_xs,terrain_ys), terrain_data)
     del terrain_xs, terrain_ys, terrain_data
     
@@ -224,8 +224,8 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     num_gradient_tests = len(gradient_test_distances)
 
     mean_estimated_segment_length = gradient_test_distances.mean()
-    print_callback("Minimum estimated segment length",gradient_test_distances.min())
-    print_callback("Mean estimated segment length",mean_estimated_segment_length)
+    print_callback(f"Minimum estimated segment length {gradient_test_distances.min():.2f}")
+    print_callback(f"Mean estimated segment length: {mean_estimated_segment_length:.2f}")
             
     def init_guess_decoupled_zs():
         '''Distance weighted average of simple drape zs of boundary points'''
@@ -355,7 +355,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         offset_distances = ((final_offsets**2).sum(axis=1))**0.5
         mean_offset_dist = float(offset_distances.mean())
         max_offset_dist = float(offset_distances.max())
-        print_callback (f"{mean_offset_dist=}\n{max_offset_dist=}")
+        print_callback (f"Offset distance mean={mean_offset_dist:.2f}, max={max_offset_dist:.2f}")
 
         # Interpolate decoupled points: iterate through decoupled_group_boundary_points, as they are likely fewer in number than the decoupled points themselves
 
@@ -384,7 +384,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     BayesianDrapeModel = namedtuple("BayesianDrapeModel",return_dict)
     return BayesianDrapeModel(**return_dict)
     
-def fit_model(model,max_offset_dist=np.inf,print_callback=print):
+def fit_model(model,maxiter,max_offset_dist=np.inf,print_callback=print):
     initial_log_likelihood = -model.minus_log_likelihood(model.initial_guess)
     last_ll = initial_log_likelihood
     callback_count = 0
@@ -395,17 +395,15 @@ def fit_model(model,max_offset_dist=np.inf,print_callback=print):
         ll = float(-model.minus_log_likelihood(x))
         lldiff = abs(ll-last_ll)
         last_ll = ll
-        print_callback (f"Optimizing: iteration {callback_count} log likelihood = {ll} (-{lldiff})          \r",end="")
+        print_callback (f"Optimizing: iteration {callback_count} log likelihood = {ll:.1f} (-{lldiff:.3f})          \r",end="")
     
-    print_callback ("Starting optimizer")
+    print_callback (f"Initial log likelihood: {-model.minus_log_likelihood(model.initial_guess):.1f}")
     lower_bounds,upper_bounds = model.optim_bounds(max_offset_dist)
-    # setting maxiter=200 gives nice results but can we do better? fixme
-    result = minimize(model.minus_log_likelihood,model.initial_guess,callback = callback,bounds=Bounds(lower_bounds,upper_bounds),jac=model.minus_log_likelihood_gradient,options=dict(maxiter=200)) 
-    print_callback (f"\nFinished optimizing: {result['success']=} {result['message']}")
+    print_callback ("Starting optimizer")
+    result = minimize(model.minus_log_likelihood,model.initial_guess,callback = callback,bounds=Bounds(lower_bounds,upper_bounds),jac=model.minus_log_likelihood_gradient,options=dict(maxiter=maxiter)) 
+    print_callback (f"\nOptimizer terminated with status: {result['message']}")
     
     optimizer_results = result["x"]
-    final_log_likelihood = -model.minus_log_likelihood(optimizer_results)
-    print_callback (f"{initial_log_likelihood=}\n{final_log_likelihood=}\n")
     print_callback ("Reconstructing geometries")
     return [LineString(geom) for geom in model.reconstruct_geometries_from_optimizer_results(optimizer_results)]
 
@@ -414,6 +412,8 @@ def fit_model_from_command_line_options():
     import rioxarray # gdal raster is another option 
     import pandas as pd
     import geopandas as gp
+    
+    maxiter_default = 1000
     
     op = OptionParser()
     op.add_option("--TERRAIN-INPUT",dest="terrainfile",help="[REQUIRED] Terrain model",metavar="FILE")
@@ -426,6 +426,7 @@ def fit_model_from_command_line_options():
     op.add_option("--GPU",dest="cuda",action="store_true",help="Enable GPU acceleration")
     op.add_option("--SIMPLE-DRAPE-FIELD",dest="simpledrapefield",help="Instead of estimating heights, perform ordinary drape of features over terrain where FIELDNAME=true",metavar="FIELDNAME")
     op.add_option("--DECOUPLE-FIELD",dest="decouplefield",help="Instead of estimating heights, decouple features from terrain where FIELDNAME=true (useful for bridges/tunnels)",metavar="FIELDNAME")
+    op.add_option("--MAXITER",dest="maxiter",help=f"Maximum number of optimizer iterations (defaults to {maxiter_default})",metavar="N",type="int",default=maxiter_default)
     (options,args) = op.parse_args()
     
     if options.cuda and not torch.cuda.is_available():
@@ -475,7 +476,7 @@ def fit_model_from_command_line_options():
     if not options.mismatch_max:
         options.mismatch_max = model.mismatch_prior_std * 4
     
-    net_df.geometry = fit_model(model,options.mismatch_max)
+    net_df.geometry = fit_model(model,options.maxiter,options.mismatch_max)
 
     print (f"Writing output to {options.outfile}") 
     net_df.to_file(options.outfile)
