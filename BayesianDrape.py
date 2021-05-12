@@ -258,14 +258,10 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     del gradient_test_distances
     all_points_arrays = [np_to_torch(a) for a in all_points_arrays]
 
-    # Allocate storage for neighbour1_zs and neighbour2_zs - necessary if we stick to array ops
-    n1_zs = np_to_torch(np.zeros(num_gradient_tests))
-    n2_zs = np_to_torch(np.zeros(num_gradient_tests))
-        
     if len(all_points_arrays[FIXED]):
         fixed_zs = terrain_interpolator(all_points_arrays[FIXED])
-        n1_zs[gradient_test_p1_types==FIXED] = fixed_zs[gradient_test_p1_indices]
-        n2_zs[gradient_test_p2_types==FIXED] = fixed_zs[gradient_test_p2_indices]
+    else:
+        fixed_zs = torch.zeros(0,dtype=torch.double)
     
     # fixme
     assert (gradient_test_p1_types!=DECOUPLED).all()
@@ -275,11 +271,17 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         if not torch.is_tensor(point_offsets):
             point_offsets = np_to_torch(point_offsets)
         point_offsets = torch.reshape(point_offsets,all_points_arrays[ESTIMATED].shape) # as optimize flattens point_offsets
+
+        n1_zs = torch.zeros(num_gradient_tests,dtype=torch.double)
+        n2_zs = torch.zeros(num_gradient_tests,dtype=torch.double)
+        
+        n1_zs[gradient_test_p1_types==FIXED] = fixed_zs[gradient_test_p1_indices[gradient_test_p1_types==FIXED]] # fixme any faster to precompute these index arrays?
+        n2_zs[gradient_test_p2_types==FIXED] = fixed_zs[gradient_test_p2_indices[gradient_test_p2_types==FIXED]]
         
         estimated_zs = terrain_interpolator(all_points_arrays[ESTIMATED] + point_offsets)
         
-        n1_zs[gradient_test_p1_types==ESTIMATED] = estimated_zs[gradient_test_p1_indices]
-        n2_zs[gradient_test_p2_types==ESTIMATED] = estimated_zs[gradient_test_p2_indices]
+        n1_zs[gradient_test_p1_types==ESTIMATED] = estimated_zs[gradient_test_p1_indices[gradient_test_p1_types==ESTIMATED]]
+        n2_zs[gradient_test_p2_types==ESTIMATED] = estimated_zs[gradient_test_p2_indices[gradient_test_p2_types==ESTIMATED]]
         
         neighbour_heightdiffs = abs(n1_zs-n2_zs)
         neighbour_grades = neighbour_heightdiffs*gradient_test_inv_distances
@@ -295,7 +297,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         if not torch.is_tensor(point_offsets):
             point_offsets = np_to_torch(point_offsets)
         point_offsets.requires_grad = True
-        minus_log_likelihood(point_offsets).backward(retain_graph=True)
+        minus_log_likelihood(point_offsets).backward() 
         return point_offsets.grad
         
     def reconstruct_geometries(opt_results):

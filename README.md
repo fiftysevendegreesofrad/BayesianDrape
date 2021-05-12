@@ -91,4 +91,4 @@ python -m pytest
 RESIDS seem to get worse with scatter plots - this is very short links being flattened by bayes especially when they are dead ends.
 
 time code in test_all.py. before refactor 0.0082
-after 0.030! not so good. is that the gradient or the indexing? could it be reuse of n1_zs n2_zs?
+after 0.030! not so good. could it be reuse of n1_zs n2_zs requiring torch backtrace to preserve the graph? yes. fixed -> time=0.008. 

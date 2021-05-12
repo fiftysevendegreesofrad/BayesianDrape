@@ -47,7 +47,7 @@ def lltest(net_file,original_lls,original_gradient,times=False):
     assert original_lls==new_lls
     
     if times:
-        time_number = 10
+        time_number = 50
         t = Timer(lambda: model.minus_log_likelihood_gradient(grad_test_input))
         print("Current gradient time:",min(t.repeat(number=time_number,repeat=3))/time_number)
     
