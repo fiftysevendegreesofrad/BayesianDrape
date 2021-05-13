@@ -24,12 +24,12 @@ def pairwise(iterable):
     next(b, None)
     return zip(a, b)
 
-slope_continuity_param_default = 2.8
+slope_continuity_scale_default = 0.42
 slope_prior_scale_default = 2.2
 
 def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
                 geometries,
-                slope_prior_scale=None,mismatch_prior_std=None,slope_continuity=None,slope_continuity_desired_impact=None,
+                slope_prior_scale=None,mismatch_prior_std=None,slope_continuity_scale=None,slope_continuity_desired_impact=None,
                 simpledraped_geometries_mask=None,decoupled_geometries_mask=None,
                 use_cuda=False,
                 print_callback=print):
@@ -44,9 +44,9 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
             
     if slope_prior_scale==None:
         slope_prior_scale=slope_prior_scale_default
-    assert not (slope_continuity is not None and slope_continuity_desired_impact is not None)
-    if slope_continuity==None and slope_continuity_desired_impact==None:
-        slope_continuity=slope_continuity_param_default
+    assert not (slope_continuity_scale is not None and slope_continuity_desired_impact is not None)
+    if slope_continuity_scale==None and slope_continuity_desired_impact==None:
+        slope_continuity_scale=slope_continuity_scale_default
 
     # computed parameter defaults
     if simpledraped_geometries_mask is None:
@@ -268,39 +268,44 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     print_callback(f"Slope prior scale of {slope_prior_scale}\N{DEGREE SIGN} gives grade of {grade_scale*100:.1f}%")
     grade_exp_dist_lambda = 1/grade_scale
     
-    # Normalized grade_pdfs used to give physical interpretation to slope_continuity, though not used in main optimization
-    def grade_pdf_normalized(slope_continuity,grade_scale,grade):
-        norm_const = (np.exp(1/(4*slope_continuity*grade_scale**2))*(np.pi**0.5) * erfc(1/(2*slope_continuity**0.5*grade_scale)))/(2*slope_continuity**0.5)
-        return norm_const**-1*np.exp(-grade/grade_scale-slope_continuity*grade**2)
+    # Normalized grade_pdfs used to give physical interpretation to slope_continuity_scale, though not used in main optimization
+    def slope_continuity_param_from_scale(scale):
+        return 1/2/scale**2
+    def grade_pdf_normalized(slope_continuity_scale,grade_scale,grade):
+        slope_continuity_param = slope_continuity_param_from_scale(slope_continuity_scale)
+        norm_const = (np.exp(1/(4*slope_continuity_param*grade_scale**2))*(np.pi**0.5) * erfc(1/(2*slope_continuity_param**0.5*grade_scale)))/(2*slope_continuity_param**0.5)
+        return norm_const**-1*np.exp(-grade/grade_scale-slope_continuity_param*grade**2)
     
     def grade_pdf2_normalized(grade_scale,grade):
         norm_const = grade_scale
         return norm_const**-1*np.exp(-grade/grade_scale)
     
-    if slope_continuity==None:
+    if slope_continuity_scale==None:
         if slope_continuity_desired_impact==1:
-            print_callback("Desired impact of slope continuity is probability multiplier of 1; setting slope continuity parameter to 0")
-            slope_continuity = 0
+            print_callback("Desired impact of slope continuity is probability multiplier of 1; setting slope continuity scale to infinity")
+            slope_continuity_scale = np.inf
         else:
-            print_callback(f"Attempting to compute slope continuity prior based on desired probability multiplier (for grade of 0.5) of {slope_continuity_desired_impact} (this is experimental and may fail)")
-            def continuity_prior_optim_target(slope_continuity):
-                impact_sc_grade05 = grade_pdf_normalized(slope_continuity,grade_scale,0.5)/grade_pdf2_normalized(grade_scale,0.5)
+            print_callback(f"Attempting to compute slope continuity prior scale based on desired probability multiplier (for grade of 0.5) of {slope_continuity_desired_impact} (this is experimental and may fail)")
+            def continuity_prior_optim_target(slope_continuity_scale):
+                impact_sc_grade05 = grade_pdf_normalized(slope_continuity_scale,grade_scale,0.5)/grade_pdf2_normalized(grade_scale,0.5)
                 return (impact_sc_grade05-slope_continuity_desired_impact)**2
-            cpmin = 0.25 # we get NaN if we go lower
-            scresult = minimize(continuity_prior_optim_target,np.zeros(1)+slope_continuity_param_default,bounds=Bounds(cpmin,np.inf)) 
+            cpsmax = 2**0.5 # we get NaN if we go lower
+            scresult = minimize(continuity_prior_optim_target,np.zeros(1)+slope_continuity_scale_default,bounds=Bounds(-np.inf,cpsmax)) 
             print_callback (f"Continuity prior solved with status: {scresult['message']}")
             assert scresult["success"]
-            slope_continuity = float(scresult["x"])
+            slope_continuity_scale = float(scresult["x"])
 
-    if slope_continuity>0:
-        print_callback(f"Slope continuity prior scale (expressed as grade) is {slope_continuity*100:.1f}%")
-        impact_sc_grade0 = grade_pdf_normalized(slope_continuity,grade_scale,0)/grade_pdf2_normalized(grade_scale,0)
-        impact_sc_grade05 = grade_pdf_normalized(slope_continuity,grade_scale,0.5)/grade_pdf2_normalized(grade_scale,0.5)
+    slope_continuity_param = slope_continuity_param_from_scale(slope_continuity_scale)
+    
+    if slope_continuity_param>0:
+        print_callback(f"Slope continuity prior scale (expressed as grade) is {slope_continuity_scale*100:.1f}%")
+        impact_sc_grade0 = grade_pdf_normalized(slope_continuity_scale,grade_scale,0)/grade_pdf2_normalized(grade_scale,0)
+        impact_sc_grade05 = grade_pdf_normalized(slope_continuity_scale,grade_scale,0.5)/grade_pdf2_normalized(grade_scale,0.5)
         print (f"Probability multiplier attributable to slope continuity prior for grade=0.0: {impact_sc_grade0}")
         print (f"Probability multiplier attributable to slope continuity prior for grade=0.5: {impact_sc_grade05}")
     
     def grade_logpdf(grade): # not normalized, for efficiency+precision in main optimization
-        return -grade_exp_dist_lambda*grade - slope_continuity*grade**2 
+        return -grade_exp_dist_lambda*grade - slope_continuity_param*grade**2 
 
     # 2d Gaussian offset prior
     sigma = mismatch_prior_std
@@ -447,8 +452,8 @@ def fit_model_from_command_line_options():
     op.add_option("--SLOPE-PRIOR-SCALE",dest="slope_prior_scale",help=f"Scale of exponential prior for path slope (equivalent to mean slope; defaults to {slope_prior_scale_default})",metavar="ANGLE_IN_DEGREES",type="float")
     op.add_option("--SPATIAL-MISMATCH-PRIOR-STD",dest="mismatch_prior_std",help="Standard deviation of zero-centred Gaussian prior for spatial mismatch (in spatial units of projection; defaults to half terrain raster cell size)",metavar="DISTANCE",type="float")
     op.add_option("--SPATIAL-MISMATCH-MAX",dest="mismatch_max",help="Maximum permissible spatial mismatch (in spatial units of projection; defaults to 4x mismatch prior std)",metavar="DISTANCE",type="float")
-    op.add_option("--SLOPE-CONTINUITY-PARAM",dest="slope_continuity",help=f"Slope continuity prior scale parameter (defaults to {slope_continuity_param_default})",metavar="GRADE",type="float")
-    op.add_option("--SLOPE-CONTINUITY-DESIRED-IMPACT",dest="slope_continuity_desired_impact",help=f"Compute slope continuity prior according to desired multiplier on probability of GRADE=0.5",metavar="MULTIPLIER",type="float")
+    op.add_option("--SLOPE-CONTINUITY-PRIOR-SCALE",dest="slope_continuity",help=f"Slope continuity prior scale parameter (defaults to {slope_continuity_scale_default})",metavar="GRADE",type="float")
+    op.add_option("--SLOPE-CONTINUITY-PRIOR-DESIRED-IMPACT",dest="slope_continuity_desired_impact",help=f"Compute slope continuity prior according to desired multiplier on probability of GRADE=0.5",metavar="MULTIPLIER",type="float")
     op.add_option("--GPU",dest="cuda",action="store_true",help="Enable GPU acceleration")
     op.add_option("--SIMPLE-DRAPE-FIELD",dest="simpledrapefield",help="Instead of estimating heights, perform ordinary drape of features over terrain where FIELDNAME=true",metavar="FIELDNAME")
     op.add_option("--DECOUPLE-FIELD",dest="decouplefield",help="Instead of estimating heights, decouple features from terrain where FIELDNAME=true (useful for bridges/tunnels)",metavar="FIELDNAME")
@@ -495,7 +500,7 @@ def fit_model_from_command_line_options():
     model = build_model(terrain_xs,terrain_ys,terrain_data,net_df.geometry,
                         slope_prior_scale = options.slope_prior_scale,
                         mismatch_prior_std = options.mismatch_prior_std,
-                        slope_continuity = options.slope_continuity,
+                        slope_continuity_scale = options.slope_continuity,
                         slope_continuity_desired_impact = options.slope_continuity_desired_impact,
                         simpledraped_geometries_mask = simpledrape_geometries_mask,
                         decoupled_geometries_mask = decouple_geometries_mask,

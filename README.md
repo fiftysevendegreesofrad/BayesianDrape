@@ -97,3 +97,7 @@ after 0.030! not so good. could it be reuse of n1_zs n2_zs requiring torch backt
 
 TODO split lines at appropriate points
 
+how to test for myself whether precision affects optim? get rid of constant in prior; before summing get smallest value, after summing add it then subtract prev sum and assert smaller than smallval/100 or something
+
+note - the bulwark link is not totally fixed with offset prior of 5, still a little spurious change remains (ground truth).
+D:\sustrans\cyclemonData\intermediate-data\osm\connected_chepstow.shp
