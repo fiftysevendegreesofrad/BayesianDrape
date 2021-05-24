@@ -32,7 +32,8 @@ def lltest(net_file,original_lls,original_gradient,times=False):
     grad_test_input = torch.flatten(np_to_torch(offset_unit_vector))
    
     print ("Old gradient[0]",original_gradient)
-    print("New gradient[0]",model.minus_log_likelihood_gradient(grad_test_input)[0:2].numpy())
+    new_gradient_0 = model.minus_log_likelihood_gradient(grad_test_input)[0:2].numpy()
+    print("New gradient[0]",new_gradient_0)
     
     for i in range(num_estimated_points):
         offset_unit_vector[i]=np.array([(i//3)%3,i%3])-1
@@ -54,13 +55,13 @@ def lltest(net_file,original_lls,original_gradient,times=False):
 
         
 def test_log_likelihood_small():
-    lltest("data/test_awkward_link.shp",[666.3370627327566, 680.6210939337058, 715.9840728425804, 774.6845624725942, 869.3440722132914],[-0.55813296,-0.12771772])
+    lltest("data/test_awkward_link.shp",[438.26806190052116, 449.6772850303616, 472.9893712044086, 510.243906868909, 574.0965200345075],[-0.58284698, -0.13337304])
     
 def test_log_likelihood_large():
-    lltest("data/biggertest.shp",[35556.77348013957, 35842.87091246876, 36532.27095995685, 37558.64256056091, 38872.721038508236],[-0.09709856, 0.00749611])
+    lltest("data/biggertest.shp",[17495.7796065754, 17764.888612489307, 18402.46316941143, 19342.22708606701, 20535.16545590596],[-0.0964554,0.00744646])
 
 def test_log_likelihood_time():
-    lltest("data/biggertest.shp",[35556.77348013957, 35842.87091246876, 36532.27095995685, 37558.64256056091, 38872.721038508236],[-0.09709856, 0.00749611],True)
+    lltest("data/biggertest.shp",[17495.7796065754, 17764.888612489307, 18402.46316941143, 19342.22708606701, 20535.16545590596],[-0.0964554,0.00744646],True)
     
 def test_autodiff_cell_boundary():
     '''Ensure there is still a gradient on boundaries of raster cells'''
