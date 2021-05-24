@@ -34,11 +34,16 @@ summing accuracy - i tried math.fsum which is exact, no apparent difference in r
 
 (bayesiandrape) D:\BayesianDrape>python -m cProfile -o profile.prof -s cumtime BayesianDrape.py --TERRAIN-INPUT=data/all_os50_terrain.tif --POLYLINE-INPUT=data/test_awkward_link.shp --OUTPUT=data/test_output.shp --SLOPE-PRIOR-STD=2.2 --SPATIAL-MISMATCH-PRIOR-STD=25
 
+python BayesianDrape.py --TERRAIN-INPUT=data/all_os50_terrain.tif --POLYLINE-INPUT=data/test_awkward_link.shp --OUTPUT=data/test_output_nocont.shp --SLOPE-PRIOR-STD=2.2 --SPATIAL-MISMATCH-PRIOR-STD=25 --SLOPE-CONTINUITY-PRIOR-SCALE=inf 
+
+
 python BayesianDrape.py --TERRAIN-INPUT=data/all_os50_terrain.tif --POLYLINE-INPUT=data/biggertest.shp --OUTPUT=data/test_output.shp --SLOPE-PRIOR-STD=2.2 --SPATIAL-MISMATCH-PRIOR-STD=25
 
 python BayesianDrape.py --TERRAIN-INPUT=data/all_os50_terrain.tif --POLYLINE-INPUT=data/bridge_fix_test1.shp --OUTPUT=data/test_output.shp --SIMPLE-DRAPE-FIELD=fix --DECOUPLE-FIELD=bridge
 
 python BayesianDrape.py --TERRAIN-INPUT=data/all_os50_terrain.tif --POLYLINE-INPUT=data/bridge_fix_test1.shp --OUTPUT=data/fix_test_out2.shp --SIMPLE-DRAPE-FIELD=fix --DECOUPLE-FIELD=bridge
+
+
 
 Slope prior should be linear composable?  and length weighted. Discuss meaning of deviation from exp distribution. But what is right segment length? Autocorrelation? Adjacent segments in single point case?
 
@@ -188,4 +193,9 @@ abs(resids).sum()/draped_net.SHAPE_Leng.sum()=0.006625902214336829
 
 
 
-OPTIMIZING - IS THERE A WAY TO GET GRADE OF CHANGE IN ANGLE WITHOUT TAN
+CURRENTLY I AM TESTING CURVATURE PRIOR AND IT IS NOT WORKING we get instant convergence hence no optimization
+why?
+have changed from curvature to just grade change in the code - same result.
+is it a prior issue or a bug in measuring curvature or a subtlety of optimization? MAKE A VERY SMALL TEST NETWORK FOR CURVATURE. NO THAT SEEMS FINE.
+
+HERE'S A THOUGHT. DO WE NEED TO DERIVE THE EQUIV OF THE EXPONENTIAL GRADE PRIOR, BUT FOR DIRECTION CHANGE I.E. ONE THAT IS INDIFFERENT TO SHAPE OF CHANGE BUT RESPONDS TO ITS SUM? it would have to be based on angle, not grade. and then f(2*theta)=f(theta)**2 implies log.

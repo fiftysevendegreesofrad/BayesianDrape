@@ -17,14 +17,17 @@ from timeit import Timer
 def np_to_torch(x):
     return torch.from_numpy(x)
 
-def lltest(net_file,original_lls,original_gradient,times=False):
+def lltest(net_file,original_lls,original_gradient,times=False,curvature=False):
     net_df = gp.read_file(net_file)
     terrain_raster = rioxarray.open_rasterio("data/all_os50_terrain.tif")
     terrain_xs = (np.array(terrain_raster.x,np.float64))
     terrain_ys = (np.flip(np.array(terrain_raster.y,np.float64)) )
     terrain_data = (np.flip(terrain_raster.data[0],axis=0).T)
     
-    model = BayesianDrape.build_model(terrain_xs,terrain_ys,terrain_data,net_df.geometry)
+    if curvature:
+        model = BayesianDrape.build_model(terrain_xs,terrain_ys,terrain_data,net_df.geometry,use_curvature_prior=True,slope_continuity_scale=np.inf)
+    else:
+        model = BayesianDrape.build_model(terrain_xs,terrain_ys,terrain_data,net_df.geometry)
     
     num_estimated_points = int(model.initial_guess.shape[0]/2)
     print (f"{num_estimated_points=}")
@@ -56,7 +59,10 @@ def lltest(net_file,original_lls,original_gradient,times=False):
         
 def test_log_likelihood_small():
     lltest("data/test_awkward_link.shp",[438.26806190052116, 449.6772850303616, 472.9893712044086, 510.243906868909, 574.0965200345075],[-0.58284698, -0.13337304])
-    
+
+def test_curvature():
+    lltest("data/test_awkward_link.shp",[438.26806190052116, 449.6772850303616, 472.9893712044086, 510.243906868909, 574.0965200345075],[-0.58284698, -0.13337304],curvature=True)
+
 def test_log_likelihood_large():
     lltest("data/biggertest.shp",[17495.7796065754, 17764.888612489307, 18402.46316941143, 19342.22708606701, 20535.16545590596],[-0.0964554,0.00744646])
 

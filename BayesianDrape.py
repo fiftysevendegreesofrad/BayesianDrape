@@ -16,7 +16,7 @@ from ordered_set import OrderedSet
 from itertools import tee,combinations
 from shapely.geometry import LineString
 import torch
-from collections import namedtuple
+from collections import namedtuple,defaultdict
 
 def pairwise(iterable):
     "s -> (s0,s1), (s1,s2), (s2, s3), ..."
@@ -39,7 +39,7 @@ curvature_shape_default = 3.20
 def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
                 geometries,
                 slope_prior_scale=None,mismatch_prior_std=None,slope_continuity_scale=None,slope_continuity_desired_impact=None,
-                testing_curvature=False,curvature_scale=None,curvature_shape = None,
+                use_curvature_prior=False,curvature_scale=None,curvature_shape = None,
                 simpledraped_geometries_mask=None,decoupled_geometries_mask=None,
                 use_cuda=False,
                 print_callback=print):
@@ -221,7 +221,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     
     # pass through data again to determine which fixed points are next to others for curvature test
     fixed_point_adjacent_to_nonfixed = set()
-    if testing_curvature:
+    if use_curvature_prior:
         for (type1,index1,_),(type2,index2,_) in all_neighbouring_points():
             if type1==FIXED and type2!=FIXED:
                 fixed_point_adjacent_to_nonfixed.add(index1)
@@ -254,8 +254,8 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     curvature_test_g2_indices = []
     curvature_test_g1_senses = []
     curvature_test_g2_senses = []
-    if testing_curvature:
-        point_to_adjoining_gradients = {}
+    if use_curvature_prior:
+        point_to_adjoining_gradients = defaultdict(list)
         for index,point1,point2 in all_gradient_tests():
             # this is not, though at first glance it appears to be, a symmetric adjacency matrix
             # it's adjacency of points to segments, which are of different types
@@ -282,10 +282,10 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     num_gradient_tests = len(gradient_test_distances)
     
     curvature_test_distances = (gradient_test_distances[curvature_test_g1_indices]+gradient_test_distances[curvature_test_g2_indices])/2
-    curvature_test_g1_indices = np.array(curvature_test_g1_indices)
-    curvature_test_g2_indices = np.array(curvature_test_g2_indices)
-    curvature_test_g1_senses = np.array(curvature_test_g1_senses)
-    curvature_test_g2_senses = np.array(curvature_test_g2_senses)
+    curvature_test_g1_indices = np.array(curvature_test_g1_indices,dtype=np.longlong)
+    curvature_test_g2_indices = np.array(curvature_test_g2_indices,dtype=np.longlong)
+    curvature_test_g1_senses = np.array(curvature_test_g1_senses,dtype=np.byte)
+    curvature_test_g2_senses = np.array(curvature_test_g2_senses,dtype=np.byte)
     
     mean_estimated_segment_length = gradient_test_distances.mean()
     print_callback(f"Minimum estimated segment length {gradient_test_distances.min():.2f}")
@@ -377,9 +377,11 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
             
     # Pareto curvature prior
     curvature_loc = -curvature_scale
+    assert curvature_scale>0
+    assert curvature_shape>0
     def curvature_logpdf(c):
         x = (c-curvature_loc)/curvature_scale 
-        return -(curvature_shape+1) * np.log(c)
+        return -(curvature_shape+1) * torch.log(x)
         
     # Define posterior log likelihood
 
@@ -443,17 +445,18 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         neighbour_likelihood = (grade_logpdf(abs(neighbour_grades))*gradient_test_weights).sum()
         
         curvature_likelihood = 0
-        if testing_curvature:
+        if use_curvature_prior:
             # gradients*sense gives gradient looking out from the pair midpoint
             # to assess slope continuity we need to invert one of these gradients again to simulate arriving and leaving
             curvature_g1s = neighbour_grades[curvature_test_g1_indices]*curvature_test_g1_senses*-1
             curvature_g2s = neighbour_grades[curvature_test_g2_indices]*curvature_test_g2_senses
-            curvatures = grade_change(curvature_g1s,curvature_g2s)/curvature_test_distances
-            curvature_likelihood = (curvature_logpdf(curvatures)*curvature_distances).sum()
+            curvatures = grade_change(curvature_g1s,curvature_g2s)
+            curvature_likelihood = (curvature_logpdf(curvatures)).sum() # fixme if we stick with this remove curvature_test_distances and rename curvature to angles or something
         
         # Log likelihood of point offsets
         offset_square_distances = ((point_offsets**2).sum(axis=1))
         offset_likelihood = squareoffset_logpdf(offset_square_distances).sum()
+        print (f"NL {float(neighbour_likelihood)} OL {float(offset_likelihood)} CL {float(curvature_likelihood)}")
 
         return -(neighbour_likelihood + offset_likelihood + curvature_likelihood)
 
@@ -513,7 +516,9 @@ def fit_model(model,maxiter,max_offset_dist=np.inf,print_callback=print):
         ll = float(-model.minus_log_likelihood(x))
         lldiff = abs(ll-last_ll)
         last_ll = ll
-        print_callback (f"Iteration {callback_count} log likelihood = {ll:.1f} (-{lldiff:.3f})          \r",end="")
+        text = f"Iteration {callback_count} log likelihood = {ll:.1f} (-{lldiff:.3f})          "
+        #print_callback (f+"\r",end="")
+        print_callback(text)
     
     lower_bounds,upper_bounds = model.optim_bounds(max_offset_dist)
     print_callback (f"Starting optimizer log likelihood = {-model.minus_log_likelihood(model.initial_guess):.1f}")
@@ -542,8 +547,8 @@ def fit_model_from_command_line_options():
     op.add_option("--SLOPE-CONTINUITY-PRIOR-SCALE",dest="slope_continuity",help=f"Slope continuity prior scale parameter (defaults to {slope_continuity_scale_default})",metavar="GRADE",type="float")
     op.add_option("--SLOPE-CONTINUITY-PRIOR-DESIRED-IMPACT",dest="slope_continuity_desired_impact",help=f"Compute slope continuity prior according to desired multiplier on probability of GRADE=0.5",metavar="MULTIPLIER",type="float")
     op.add_option("--CURVATURE-PRIOR-SCALE",dest="curvature_scale",help=f"Curvature prior scale (defaults to {curvature_scale_default})",metavar="GRADE_CHANGE_PER_UNIT_LENGTH",type="float")
-    op.add_option("--CURVATURE-PRIOR-SHAPE",dest="curvature_shape",help=f"Curvature prior shape (defaults to {curvature_shape_default})",metavar="PARETO SHAPE PARAM",type="float")
-    op.add_option("--TEST-CURVATURE",dest="test_curvature",action="store_true",help="Enable curvature test")
+    op.add_option("--CURVATURE-PRIOR-SHAPE",dest="curvature_shape",help=f"Curvature prior shape (defaults to {curvature_shape_default})",metavar="PARETO_SHAPE_PARAM",type="float")
+    op.add_option("--USE-CURVATURE-PRIOR",dest="test_curvature",action="store_true",help="Enable curvature prior",default=False)
     op.add_option("--GPU",dest="cuda",action="store_true",help="Enable GPU acceleration")
     op.add_option("--SIMPLE-DRAPE-FIELD",dest="simpledrapefield",help="Instead of estimating heights, perform ordinary drape of features over terrain where FIELDNAME=true",metavar="FIELDNAME")
     op.add_option("--DECOUPLE-FIELD",dest="decouplefield",help="Instead of estimating heights, decouple features from terrain where FIELDNAME=true (useful for bridges/tunnels)",metavar="FIELDNAME")
@@ -592,7 +597,7 @@ def fit_model_from_command_line_options():
                         mismatch_prior_std = options.mismatch_prior_std,
                         slope_continuity_scale = options.slope_continuity,
                         slope_continuity_desired_impact = options.slope_continuity_desired_impact,
-                        testing_curvature = options.test_curvature,
+                        use_curvature_prior = options.test_curvature,
                         curvature_scale = options.curvature_scale,
                         curvature_shape = options.curvature_shape,
                         simpledraped_geometries_mask = simpledrape_geometries_mask,
