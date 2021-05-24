@@ -101,3 +101,91 @@ how to test for myself whether precision affects optim? get rid of constant in p
 
 note - the bulwark link is not totally fixed with offset prior of 5, still a little spurious change remains (ground truth).
 D:\sustrans\cyclemonData\intermediate-data\osm\connected_chepstow.shp
+
+
+error model for the bayesiandrape output vs OS:
+length weighted logpdf(grade): hugely influenced by length; long links good short links bad
+logpdf(grade) very heteroscedastic, worst links all short
+if we don't length weight then it's the long ones that are bad - but situation far better than the length weighted one
+but what do i care about more?
+i care about elev change per unit length.
+it's heteroscedastic. 
+that can be modelled.
+but it's not about what i care about, it's what is.
+the thing to analyse proability wise is links.
+
+
+first run
+sigma is 3.9
+slope maybe not burned in - change starting conditions and run length
+interactions are as you'd expect 
+
+interactions on longer test are hardly there
+
+do we care about log likelihood? it's the same thing as optimizing anyway I think and we do care about underlying process
+
+see if mcmc results differ if we just filter for +ve outlier likelihood
+
+what we'll do after this is
+1. plot of mean error over each param (based on max ll)
+2. plot of mean error of (simple drape high resids, low resids, bayes drape high resids, low resids) over each param
+3. plot of regression param over the same
+
+
+interactions between slope and contin are a problem.
+ideas
+1. try to engineer them out by fitting the prior to two impact points ******
+2. see if it settles down somewhere if i allow slope up to 200 (trying now) (doh should be 90 but doesn't matter) - yes settles to 90 degree slope!!
+3. remove exp prior just use normal?? maybe without sub link data this makes most sense. 
+4. is the real issue that we don't have sub link data to properly calibrate sc
+
+nb real reason for length weight is to solve MAUP (linear composable parts)
+
+3 ABOVE: if slope fixed, contin doesn't converge
+trying again without weird impact estimation
+
+mismatch,slope,contin(A=grade scale otherwise impact)
+42 90 0.75A -2225.138515253074 0.9902554944738716 0.006059345189255998
+38 90 0.68A -2225.1531872282117 0.9902435474581606 0.0060552036192509096
+5.68 85.4 0 -2229.198081130041 0.9905906276707698 0.006209601733760056
+6 39.2 0.02 -2250.590703284687 0.9895723391504408 0.006043401431946213
+6 2 0.5 -2783.305895523943 0.9844628109417487 0.012248940699023658
+6 2 1 -2782.9485554265366 0.9844588426667591 0.01225303269807083
+  
+is sigma really the same? comes out at 2.49 on a param set bayes had optimized to 2.76 (ignoring interactions i.e. feeding in median params). seems close. only affects LL calculation anyway not r2/mse.
+
+does seeem my slope priors are wrong
+
+is it just that my mismatch is way underestimated if i widen the prior it will peak and stick? try again newsigma-noexp-widemismatch
+
+priors: compare exp with scale of 2 degrees to norm with scale=grade 0.68. They cross over at about 10 degrees (18% grade), which is vaguely sensible. 
+what's weird is the direction of interaction (higher mismatch and more permissive continpar) unless there's no interaction and both were just underspecified to start with. which we'll find out now.
+ah, they are: widening priors means they don't run away forever. but they still interact, and that makes sense - probabilities adjust in proportion to one another. 
+
+try again with contin as  ratio of mismatch - yes it converges (though it's pretty agnostic on mismatch)
+post_log_likelihood(97,0.0178,printstats=True)
+lr.rvalue=0.9902729405931308
+abs(resids).sum()/draped_net.SHAPE_Leng.sum()=0.006065016923154786
+-2225.0916912063867
+is that a weird convergence though? as one parameter burned in only after the other converged? 
+post_log_likelihood(119.5,0.0178,printstats=True)
+lr.rvalue=0.9902731473753407
+abs(resids).sum()/draped_net.SHAPE_Leng.sum()=0.00606493722090627
+-2225.0769589767024
+this looks good as a model in that it doesn't much care what mismatch is.
+in fact the prior could go even wider 
+post_log_likelihood(200,0.0176,printstats=True)
+lr.rvalue=0.9903299156766088
+abs(resids).sum()/draped_net.SHAPE_Leng.sum()=0.006085272336636772
+-2225.113266878689
+we'll have to quantify this with evidence integral though
+
+EXP ALONE, REMOVE INTERACT, WIDE PRIOR
+post_log_likelihood(109,0.0067,printstats=True)
+lr.rvalue=0.9892148522632574
+abs(resids).sum()/draped_net.SHAPE_Leng.sum()=0.006625902214336829
+-2308.222028393377
+
+
+
+OPTIMIZING - IS THERE A WAY TO GET GRADE OF CHANGE IN ANGLE WITHOUT TAN

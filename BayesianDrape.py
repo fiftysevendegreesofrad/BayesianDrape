@@ -24,12 +24,22 @@ def pairwise(iterable):
     next(b, None)
     return zip(a, b)
 
+def grade_change(g1,g2):
+    '''Rotating grades g1 and g2 such that g1 is horizontal, what is abs(g2)?'''
+    # answer derived from triangle rule a^2==b^2+c^2-2bc cos A
+    ratio = (-g1*g2-1)/((1+g1**2)*(1+g2**2))**0.5
+    # to get angle we would arccos(ratio), but we want ...
+    return abs(((1-ratio**2)**0.5)/ratio)
+
 slope_continuity_scale_default = 0.42
 slope_prior_scale_default = 2.2
+curvature_scale_default = 0.0036
+curvature_shape_default = 3.20
 
 def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
                 geometries,
                 slope_prior_scale=None,mismatch_prior_std=None,slope_continuity_scale=None,slope_continuity_desired_impact=None,
+                testing_curvature=False,curvature_scale=None,curvature_shape = None,
                 simpledraped_geometries_mask=None,decoupled_geometries_mask=None,
                 use_cuda=False,
                 print_callback=print):
@@ -47,6 +57,11 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     assert not (slope_continuity_scale is not None and slope_continuity_desired_impact is not None)
     if slope_continuity_scale==None and slope_continuity_desired_impact==None:
         slope_continuity_scale=slope_continuity_scale_default
+
+    if curvature_scale == None:
+        curvature_scale = curvature_scale_default
+    if curvature_shape == None:
+        curvature_shape = curvature_shape_default
 
     # computed parameter defaults
     if simpledraped_geometries_mask is None:
@@ -189,31 +204,73 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         gradient_test_p2_types.append(type2)
         gradient_test_p2_indices.append(index2)
         gradient_test_distances.append(dist)
+        
+    def all_gradient_tests():
+        zipped = zip(gradient_test_p1_types,gradient_test_p1_indices,gradient_test_p2_types,gradient_test_p2_indices)
+        for i,(t1,i1,t2,i2) in enumerate(zipped):
+            yield i,(t1,i1),(t2,i2)
     
-    # Build all matrices (third pass through data)
+    def all_neighbouring_points():
+        for geom in geometries:
+            xs,ys = geom.coords.xy
+            for point1,point2 in pairwise(zip(xs,ys)):
+                type1,index1 = get_point_type_and_index(point1)
+                type2,index2 = get_point_type_and_index(point2)
+                assert (type1,index1)!=(type2,index2)
+                yield (type1,index1,point1),(type2,index2,point2)
+    
+    # pass through data again to determine which fixed points are next to others for curvature test
+    fixed_point_adjacent_to_nonfixed = set()
+    if testing_curvature:
+        for (type1,index1,_),(type2,index2,_) in all_neighbouring_points():
+            if type1==FIXED and type2!=FIXED:
+                fixed_point_adjacent_to_nonfixed.add(index1)
+            if type2==FIXED and type1!=FIXED:
+                fixed_point_adjacent_to_nonfixed.add(index2)
+    
+    # Build all matrices (another pass through data)
     # provided we optimize all points together, we only store distances in one direction
     # otherwise each gradient likelihood is counted twice, which breaks log likelihood
     # if we did ever want to compute log likelihood for a single point, we would need a symmetric distance matrix
 
-    for geom in geometries:
-        xs,ys = geom.coords.xy
-        for point1,point2 in pairwise(zip(xs,ys)):
-            type1,index1 = get_point_type_and_index(point1)
-            type2,index2 = get_point_type_and_index(point2)
-            assert (type1,index1)!=(type2,index2)
-            (x1,y1),(x2,y2) = point1,point2
-            dist = ((x2-x1)**2+(y2-y1)**2)**0.5
-            assert dist>0
-            
-            if (type1,type2)!=(FIXED,FIXED):
+    for (type1,index1,(x1,y1)),(type2,index2,(x2,y2)) in all_neighbouring_points():
+        dist = ((x2-x1)**2+(y2-y1)**2)**0.5
+        assert dist>0
+        
+        if ((type1,type2)!=(FIXED,FIXED)
+            or ((type1,type2)==(FIXED,FIXED) and curvature_test and (index1 in fixed_point_adjacent_to_nonfixed or index2 in fixed_point_adjacent_to_nonfixed))):
                 add_gradient_test(type1,index1,type2,index2,dist)
-                
-            if type1==DECOUPLED:
-                decoupled_graph_add(index1,type2,index2,dist)
-            elif type2==DECOUPLED:
-                assert type1!=DECOUPLED # handled above
-                decoupled_graph_add(index2,type1,index1,dist)
             
+        if type1==DECOUPLED:
+            decoupled_graph_add(index1,type2,index2,dist)
+        elif type2==DECOUPLED:
+            assert type1!=DECOUPLED # handled above
+            decoupled_graph_add(index2,type1,index1,dist)
+    
+    del fixed_point_adjacent_to_nonfixed
+    
+    # build curvature test
+    curvature_test_g1_indices = []
+    curvature_test_g2_indices = []
+    curvature_test_g1_senses = []
+    curvature_test_g2_senses = []
+    if testing_curvature:
+        point_to_adjoining_gradients = {}
+        for index,point1,point2 in all_gradient_tests():
+            # this is not, though at first glance it appears to be, a symmetric adjacency matrix
+            # it's adjacency of points to segments, which are of different types
+            point_to_adjoining_gradients[point1].append((index,1)) # (index, sense):  gradients are computed from p1 to p2
+            point_to_adjoining_gradients[point2].append((index,-1))# reading gradient *from* p2 we later need to multiply by -1
+            
+        for adjoining_gradients in point_to_adjoining_gradients.values():
+            for (ind1,sense1),(ind2,sense2) in combinations(adjoining_gradients,2):
+                curvature_test_g1_indices.append(ind1)
+                curvature_test_g2_indices.append(ind2)
+                curvature_test_g1_senses.append(sense1)
+                curvature_test_g2_senses.append(sense2)
+        
+        del point_to_adjoining_gradients
+
     all_points_arrays = [np.array(s) for s in all_points_sets]
     del all_points_sets,point_to_type
     decoupled_graph = decoupled_graph.tocsr()
@@ -223,7 +280,13 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     gradient_test_p2_indices = np.array(gradient_test_p2_indices,dtype=np.longlong)
     gradient_test_distances = np.array(gradient_test_distances)
     num_gradient_tests = len(gradient_test_distances)
-
+    
+    curvature_test_distances = (gradient_test_distances[curvature_test_g1_indices]+gradient_test_distances[curvature_test_g2_indices])/2
+    curvature_test_g1_indices = np.array(curvature_test_g1_indices)
+    curvature_test_g2_indices = np.array(curvature_test_g2_indices)
+    curvature_test_g1_senses = np.array(curvature_test_g1_senses)
+    curvature_test_g2_senses = np.array(curvature_test_g2_senses)
+    
     mean_estimated_segment_length = gradient_test_distances.mean()
     print_callback(f"Minimum estimated segment length {gradient_test_distances.min():.2f}")
     print_callback(f"Mean estimated segment length: {mean_estimated_segment_length:.2f}")
@@ -260,7 +323,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         return decoupled_weighted_z_sum/decoupled_weight_sum    
             
     # Define priors - both implemented by hand for speed and compatibility with autodiff
-
+    
     print_callback(f"Spatial mismatch prior scale is {mismatch_prior_std}")
     
     # Exponential grade prior
@@ -312,11 +375,27 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     def squareoffset_logpdf(x): # not normalized, for efficiency+precision in main optimization
         return -(x/sigma_sq)/2 
             
+    # Pareto curvature prior
+    curvature_loc = -curvature_scale
+    def curvature_logpdf(c):
+        x = (c-curvature_loc)/curvature_scale 
+        return -(curvature_shape+1) * np.log(c)
+        
     # Define posterior log likelihood
 
     # Prepare arrays for likelihood tests
     gradient_test_weights = np_to_torch(gradient_test_distances / mean_estimated_segment_length)
     gradient_test_inv_distances = np_to_torch(gradient_test_distances**-1)
+    gradient_test_p1_indices = np_to_torch(gradient_test_p1_indices)
+    gradient_test_p2_indices = np_to_torch(gradient_test_p2_indices)
+    gradient_test_p1_types = np_to_torch(gradient_test_p1_types)
+    gradient_test_p2_types = np_to_torch(gradient_test_p2_types)
+    curvature_test_g1_indices = np_to_torch(curvature_test_g1_indices)
+    curvature_test_g1_senses = np_to_torch(curvature_test_g1_senses)
+    curvature_test_g2_indices = np_to_torch(curvature_test_g2_indices)
+    curvature_test_g2_senses = np_to_torch(curvature_test_g2_senses)
+    curvature_test_distances = np_to_torch(curvature_test_distances)
+    
     del gradient_test_distances
     all_points_arrays = [np_to_torch(a) for a in all_points_arrays]
 
@@ -359,15 +438,24 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         n1_zs[gradient_test_p1_types==DECOUPLED] = decoupled_zs[gradient_test_p1_indices[gradient_test_p1_types==DECOUPLED]]
         n2_zs[gradient_test_p2_types==DECOUPLED] = decoupled_zs[gradient_test_p2_indices[gradient_test_p2_types==DECOUPLED]]
         
-        neighbour_heightdiffs = abs(n1_zs-n2_zs)
+        neighbour_heightdiffs = n2_zs-n1_zs
         neighbour_grades = neighbour_heightdiffs*gradient_test_inv_distances
-        neighbour_likelihood = (grade_logpdf(neighbour_grades)*gradient_test_weights).sum()
+        neighbour_likelihood = (grade_logpdf(abs(neighbour_grades))*gradient_test_weights).sum()
+        
+        curvature_likelihood = 0
+        if testing_curvature:
+            # gradients*sense gives gradient looking out from the pair midpoint
+            # to assess slope continuity we need to invert one of these gradients again to simulate arriving and leaving
+            curvature_g1s = neighbour_grades[curvature_test_g1_indices]*curvature_test_g1_senses*-1
+            curvature_g2s = neighbour_grades[curvature_test_g2_indices]*curvature_test_g2_senses
+            curvatures = grade_change(curvature_g1s,curvature_g2s)/curvature_test_distances
+            curvature_likelihood = (curvature_logpdf(curvatures)*curvature_distances).sum()
         
         # Log likelihood of point offsets
         offset_square_distances = ((point_offsets**2).sum(axis=1))
         offset_likelihood = squareoffset_logpdf(offset_square_distances).sum()
 
-        return -(neighbour_likelihood + offset_likelihood)
+        return -(neighbour_likelihood + offset_likelihood + curvature_likelihood)
 
     def minus_log_likelihood_gradient(opt_params):
         if not torch.is_tensor(opt_params):
@@ -453,6 +541,9 @@ def fit_model_from_command_line_options():
     op.add_option("--SPATIAL-MISMATCH-MAX",dest="mismatch_max",help="Maximum permissible spatial mismatch (in spatial units of projection; defaults to 4x mismatch prior std)",metavar="DISTANCE",type="float")
     op.add_option("--SLOPE-CONTINUITY-PRIOR-SCALE",dest="slope_continuity",help=f"Slope continuity prior scale parameter (defaults to {slope_continuity_scale_default})",metavar="GRADE",type="float")
     op.add_option("--SLOPE-CONTINUITY-PRIOR-DESIRED-IMPACT",dest="slope_continuity_desired_impact",help=f"Compute slope continuity prior according to desired multiplier on probability of GRADE=0.5",metavar="MULTIPLIER",type="float")
+    op.add_option("--CURVATURE-PRIOR-SCALE",dest="curvature_scale",help=f"Curvature prior scale (defaults to {curvature_scale_default})",metavar="GRADE_CHANGE_PER_UNIT_LENGTH",type="float")
+    op.add_option("--CURVATURE-PRIOR-SHAPE",dest="curvature_shape",help=f"Curvature prior shape (defaults to {curvature_shape_default})",metavar="PARETO SHAPE PARAM",type="float")
+    op.add_option("--TEST-CURVATURE",dest="test_curvature",action="store_true",help="Enable curvature test")
     op.add_option("--GPU",dest="cuda",action="store_true",help="Enable GPU acceleration")
     op.add_option("--SIMPLE-DRAPE-FIELD",dest="simpledrapefield",help="Instead of estimating heights, perform ordinary drape of features over terrain where FIELDNAME=true",metavar="FIELDNAME")
     op.add_option("--DECOUPLE-FIELD",dest="decouplefield",help="Instead of estimating heights, decouple features from terrain where FIELDNAME=true (useful for bridges/tunnels)",metavar="FIELDNAME")
@@ -501,6 +592,9 @@ def fit_model_from_command_line_options():
                         mismatch_prior_std = options.mismatch_prior_std,
                         slope_continuity_scale = options.slope_continuity,
                         slope_continuity_desired_impact = options.slope_continuity_desired_impact,
+                        testing_curvature = options.test_curvature,
+                        curvature_scale = options.curvature_scale,
+                        curvature_shape = options.curvature_shape,
                         simpledraped_geometries_mask = simpledrape_geometries_mask,
                         decoupled_geometries_mask = decouple_geometries_mask,
                         use_cuda = options.cuda)

@@ -82,6 +82,16 @@ def test_autodiff_cell_boundary():
         
     for point in [(355000,205000),(355025,205025),(355050,205050),(355075,205075)]:
         print_point_inter_and_grad(point)
+
+def is_nearly(a,b):
+    return abs(a-b)<0.1
+
+def test_grade_change_as_angle():
+    assert is_nearly(BayesianDrape.grade_change(0,1),1)
+    assert is_nearly(BayesianDrape.grade_change(1,2),abs(np.tan(18.4*np.pi/180)))
+    assert is_nearly(BayesianDrape.grade_change(1,-2),abs(np.tan(108.4*np.pi/180)))
+    assert is_nearly(BayesianDrape.grade_change(2,-1),abs(np.tan(108.4*np.pi/180)))
+    assert is_nearly(BayesianDrape.grade_change(2,0),abs(np.tan(63.4*np.pi/180)))
     
 if __name__ == '__main__':
     test_log_likelihood_time()
