@@ -292,7 +292,6 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
             cpsmax = 2**0.5 # we get NaN if we go lower
             scresult = minimize(continuity_prior_optim_target,np.zeros(1)+slope_continuity_scale_default,bounds=Bounds(-np.inf,cpsmax)) 
             print_callback (f"Continuity prior solved with status: {scresult['message']}")
-            assert scresult["success"]
             slope_continuity_scale = float(scresult["x"])
 
     slope_continuity_param = slope_continuity_param_from_scale(slope_continuity_scale)
