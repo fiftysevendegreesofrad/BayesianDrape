@@ -416,21 +416,34 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         decoupled_bounds_upper = np.zeros(num_decoupled_points)+terrain_max_height
         return np.concatenate((offset_bounds_lower,decoupled_bounds_lower)),np.concatenate((offset_bounds_upper,decoupled_bounds_upper))
     
+    z1s_mask_fixed = gradient_test_p1_types==FIXED
+    z2s_mask_fixed = gradient_test_p2_types==FIXED
+    z1s_mask_est = gradient_test_p1_types==ESTIMATED
+    z2s_mask_est = gradient_test_p2_types==ESTIMATED
+    z1s_mask_decoupled = gradient_test_p1_types==DECOUPLED
+    z2s_mask_decoupled = gradient_test_p2_types==DECOUPLED
+    fixed_zs_p1_indices = gradient_test_p1_indices[z1s_mask_fixed]
+    fixed_zs_p2_indices = gradient_test_p2_indices[z2s_mask_fixed]
+    est_zs_p1_indices = gradient_test_p1_indices[z1s_mask_est]
+    est_zs_p2_indices = gradient_test_p2_indices[z2s_mask_est]
+    decoupled_zs_p1_indices = gradient_test_p1_indices[z1s_mask_decoupled]
+    decoupled_zs_p2_indices = gradient_test_p2_indices[z2s_mask_decoupled]
+    
     def likelihood_breakdown(opt_params):
         point_offsets,decoupled_zs = unpack_opt_params(opt_params)
         
         estimated_zs = terrain_interpolator(all_points_arrays[ESTIMATED] + point_offsets)
         
-        n1_zs = torch.zeros(num_gradient_tests,dtype=torch.double)
-        n2_zs = torch.zeros(num_gradient_tests,dtype=torch.double)
-        n1_zs[gradient_test_p1_types==FIXED] = fixed_zs[gradient_test_p1_indices[gradient_test_p1_types==FIXED]] # fixme any faster to precompute these index arrays? possibly in polymorphic tensor
-        n2_zs[gradient_test_p2_types==FIXED] = fixed_zs[gradient_test_p2_indices[gradient_test_p2_types==FIXED]]
-        n1_zs[gradient_test_p1_types==ESTIMATED] = estimated_zs[gradient_test_p1_indices[gradient_test_p1_types==ESTIMATED]]
-        n2_zs[gradient_test_p2_types==ESTIMATED] = estimated_zs[gradient_test_p2_indices[gradient_test_p2_types==ESTIMATED]]
-        n1_zs[gradient_test_p1_types==DECOUPLED] = decoupled_zs[gradient_test_p1_indices[gradient_test_p1_types==DECOUPLED]]
-        n2_zs[gradient_test_p2_types==DECOUPLED] = decoupled_zs[gradient_test_p2_indices[gradient_test_p2_types==DECOUPLED]]
+        z1s = torch.zeros(num_gradient_tests,dtype=torch.double)
+        z2s = torch.zeros(num_gradient_tests,dtype=torch.double)
+        z1s[z1s_mask_fixed] = fixed_zs[fixed_zs_p1_indices] 
+        z2s[z2s_mask_fixed] = fixed_zs[fixed_zs_p2_indices]
+        z1s[z1s_mask_est] = estimated_zs[est_zs_p1_indices]
+        z2s[z2s_mask_est] = estimated_zs[est_zs_p2_indices]
+        z1s[z1s_mask_decoupled] = decoupled_zs[decoupled_zs_p1_indices]
+        z2s[z2s_mask_decoupled] = decoupled_zs[decoupled_zs_p2_indices]
         
-        neighbour_heightdiffs = n2_zs-n1_zs
+        neighbour_heightdiffs = z2s-z1s
         neighbour_grades = neighbour_heightdiffs*gradient_test_inv_distances
         neighbour_likelihood = (grade_logpdf(abs(neighbour_grades))*gradient_test_weights).sum()
         
@@ -507,15 +520,17 @@ def fit_model(model,maxiter,max_offset_dist=np.inf,print_callback=print):
     initial_log_likelihood,initial_lik_report = model.likelihood_report(model.initial_guess)
     last_ll = initial_log_likelihood
     callback_count = 0
+    reportiter = 5
     
     def callback(x):
         nonlocal last_ll,callback_count
         callback_count += 1
-        ll = float(-model.minus_log_likelihood(x))
-        lldiff = abs(ll-last_ll)
-        last_ll = ll
-        text = f"Iteration {callback_count} log likelihood = {ll:.1f} (-{lldiff:.3f})          "
-        print_callback (text+"\r",end="")
+        if callback_count%reportiter==0:
+            ll = float(-model.minus_log_likelihood(x))
+            lldiff = abs(ll-last_ll)
+            last_ll = ll
+            text = f"Iteration {callback_count} log likelihood = {ll:.1f} (-{lldiff:.3f} over {reportiter} iterations)          "
+            print_callback (text+"\r",end="")
     
     lower_bounds,upper_bounds = model.optim_bounds(max_offset_dist)
     print_callback (f"Starting optimizer log likelihood = {initial_log_likelihood:.1f}\n{initial_lik_report}")
@@ -523,7 +538,9 @@ def fit_model(model,maxiter,max_offset_dist=np.inf,print_callback=print):
     print_callback (f"\nOptimizer terminated with status: {result['message']}")
     
     optimizer_results = result["x"]
-    print_callback(model.likelihood_report(optimizer_results)[1])
+    end_log_likelihood,end_lik_report = model.likelihood_report(optimizer_results)
+    print_callback (f"Final optimizer log likelihood = {end_log_likelihood:.1f}\n{end_lik_report}")
+    
     print_callback ("Reconstructing geometries")
     return [LineString(geom) for geom in model.reconstruct_geometries_from_optimizer_results(optimizer_results)]
 
