@@ -152,7 +152,7 @@ trying again without weird impact estimation
 mismatch,slope,contin(A=grade scale otherwise impact)
 42 90 0.75A -2225.138515253074 0.9902554944738716 0.006059345189255998
 38 90 0.68A -2225.1531872282117 0.9902435474581606 0.0060552036192509096
-5.68 85.4 0 -2229.198081130041 0.9905906276707698 0.006209601733760056
+5.68 85.4 0 -2229.198081130041 0.9905906276707698 0.006209601733760056 
 6 39.2 0.02 -2250.590703284687 0.9895723391504408 0.006043401431946213
 6 2 0.5 -2783.305895523943 0.9844628109417487 0.012248940699023658
 6 2 1 -2782.9485554265366 0.9844588426667591 0.01225303269807083
@@ -178,6 +178,7 @@ lr.rvalue=0.9902731473753407
 abs(resids).sum()/draped_net.SHAPE_Leng.sum()=0.00606493722090627
 -2225.0769589767024
 this looks good as a model in that it doesn't much care what mismatch is.
+
 in fact the prior could go even wider 
 post_log_likelihood(200,0.0176,printstats=True)
 lr.rvalue=0.9903299156766088
@@ -197,5 +198,23 @@ CURRENTLY I AM TESTING CURVATURE PRIOR AND IT IS NOT WORKING we get instant conv
 why?
 have changed from curvature to just grade change in the code - same result.
 is it a prior issue or a bug in measuring curvature or a subtlety of optimization? MAKE A VERY SMALL TEST NETWORK FOR CURVATURE. NO THAT SEEMS FINE.
+trying one other point really screws up curvatures (and neighbour likelihoods) so optimizer gives up
 
 HERE'S A THOUGHT. DO WE NEED TO DERIVE THE EQUIV OF THE EXPONENTIAL GRADE PRIOR, BUT FOR DIRECTION CHANGE I.E. ONE THAT IS INDIFFERENT TO SHAPE OF CHANGE BUT RESPONDS TO ITS SUM? it would have to be based on angle, not grade. and then f(2*theta)=f(theta)**2 implies log.
+
+also the grade change code can return nan due to rounding errors. need to restrict arctrig input to -1,1.
+then maybe all prior options will work....
+
+expon angle prior works. (scale=1.28 degrees)
+
+would expon distance weighted curvature work better? no, it's not needed as an expon angle prior ALREADY PREVENTS SHORT SEGMENTS FROM CHEATING.
+(if i did want to:
+    but there are such outliers. try truncating distance from 0.1 to 2 then fitting expon scale=0.65 for pitch/trunc_dist and NOT WEIGHTING IT
+    implement both and MCMC test
+    perhaps ultimately we argue that we don't want to do curvature tests as they involve looking at lots of neighbouring points so we can always test curvature over a set distance thereby removing outliers?
+    this is alright though expon angles is better: (using pareto distributed distance weighted curvature and note the rather lax curvature scale)
+(bayesiandrape) D:\BayesianDrape>python BayesianDrape.py --TERRAIN-INPUT=data/all_os50_terrain.tif --POLYLINE-INPUT=data/test_awkward_link.shp --OUTPUT=data/test_output_curvaturecont_PARETO.shp --SLOPE-PRIOR-SCALE=4 --SPATIAL-MISMATCH-PRIOR-STD=25 --SLOPE-CONTINUITY-PRIOR-SCALE=inf --CURVATURE-PRIOR-SCALE=0.91 --USE-CURVATURE-PRIOR --CURVATURE-PRIOR-SHAPE=1.78
+)
+
+ok so we need a version that supports any combination of expon grade, normal grade, expon angles.
+set mismatch max to tile size

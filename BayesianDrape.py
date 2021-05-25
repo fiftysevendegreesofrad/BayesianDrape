@@ -24,22 +24,17 @@ def pairwise(iterable):
     next(b, None)
     return zip(a, b)
 
-def grade_change(g1,g2):
-    '''Rotating grades g1 and g2 such that g1 is horizontal, what is abs(g2)?'''
-    # answer derived from triangle rule a^2==b^2+c^2-2bc cos A
-    ratio = (-g1*g2-1)/((1+g1**2)*(1+g2**2))**0.5
-    # to get angle we would arccos(ratio), but we want ...
-    return abs(((1-ratio**2)**0.5)/ratio)
+def grade_change_angle(g1,g2):
+    return abs(torch.atan(g1)-torch.atan(g2))/np.pi*180
 
 slope_continuity_scale_default = 0.42
 slope_prior_scale_default = 2.2
-curvature_scale_default = 0.0036
-curvature_shape_default = 3.20
+pitch_angle_scale_default = 1.28
 
 def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
                 geometries,
                 slope_prior_scale=None,mismatch_prior_std=None,slope_continuity_scale=None,slope_continuity_desired_impact=None,
-                use_curvature_prior=False,curvature_scale=None,curvature_shape = None,
+                use_pitch_angle_prior=False,pitch_angle_scale=None,
                 simpledraped_geometries_mask=None,decoupled_geometries_mask=None,
                 use_cuda=False,
                 print_callback=print):
@@ -58,11 +53,9 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     if slope_continuity_scale==None and slope_continuity_desired_impact==None:
         slope_continuity_scale=slope_continuity_scale_default
 
-    if curvature_scale == None:
-        curvature_scale = curvature_scale_default
-    if curvature_shape == None:
-        curvature_shape = curvature_shape_default
-
+    if pitch_angle_scale == None:
+        pitch_angle_scale = pitch_angle_scale_default
+    
     # computed parameter defaults
     if simpledraped_geometries_mask is None:
         simpledraped_geometries_mask = [0]*len(geometries)
@@ -219,9 +212,9 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
                 assert (type1,index1)!=(type2,index2)
                 yield (type1,index1,point1),(type2,index2,point2)
     
-    # pass through data again to determine which fixed points are next to others for curvature test
+    # pass through data again to determine which fixed points are next to others for pitch_angle test
     fixed_point_adjacent_to_nonfixed = set()
-    if use_curvature_prior:
+    if use_pitch_angle_prior:
         for (type1,index1,_),(type2,index2,_) in all_neighbouring_points():
             if type1==FIXED and type2!=FIXED:
                 fixed_point_adjacent_to_nonfixed.add(index1)
@@ -238,7 +231,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         assert dist>0
         
         if ((type1,type2)!=(FIXED,FIXED)
-            or ((type1,type2)==(FIXED,FIXED) and curvature_test and (index1 in fixed_point_adjacent_to_nonfixed or index2 in fixed_point_adjacent_to_nonfixed))):
+            or ((type1,type2)==(FIXED,FIXED) and use_pitch_angle_prior and (index1 in fixed_point_adjacent_to_nonfixed or index2 in fixed_point_adjacent_to_nonfixed))):
                 add_gradient_test(type1,index1,type2,index2,dist)
             
         if type1==DECOUPLED:
@@ -249,12 +242,12 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     
     del fixed_point_adjacent_to_nonfixed
     
-    # build curvature test
-    curvature_test_g1_indices = []
-    curvature_test_g2_indices = []
-    curvature_test_g1_senses = []
-    curvature_test_g2_senses = []
-    if use_curvature_prior:
+    # build pitch_angle test
+    pitch_angle_test_g1_indices = []
+    pitch_angle_test_g2_indices = []
+    pitch_angle_test_g1_senses = []
+    pitch_angle_test_g2_senses = []
+    if use_pitch_angle_prior:
         point_to_adjoining_gradients = defaultdict(list)
         for index,point1,point2 in all_gradient_tests():
             # this is not, though at first glance it appears to be, a symmetric adjacency matrix
@@ -264,10 +257,10 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
             
         for adjoining_gradients in point_to_adjoining_gradients.values():
             for (ind1,sense1),(ind2,sense2) in combinations(adjoining_gradients,2):
-                curvature_test_g1_indices.append(ind1)
-                curvature_test_g2_indices.append(ind2)
-                curvature_test_g1_senses.append(sense1)
-                curvature_test_g2_senses.append(sense2)
+                pitch_angle_test_g1_indices.append(ind1)
+                pitch_angle_test_g2_indices.append(ind2)
+                pitch_angle_test_g1_senses.append(sense1)
+                pitch_angle_test_g2_senses.append(sense2)
         
         del point_to_adjoining_gradients
 
@@ -281,11 +274,11 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     gradient_test_distances = np.array(gradient_test_distances)
     num_gradient_tests = len(gradient_test_distances)
     
-    curvature_test_distances = (gradient_test_distances[curvature_test_g1_indices]+gradient_test_distances[curvature_test_g2_indices])/2
-    curvature_test_g1_indices = np.array(curvature_test_g1_indices,dtype=np.longlong)
-    curvature_test_g2_indices = np.array(curvature_test_g2_indices,dtype=np.longlong)
-    curvature_test_g1_senses = np.array(curvature_test_g1_senses,dtype=np.byte)
-    curvature_test_g2_senses = np.array(curvature_test_g2_senses,dtype=np.byte)
+    pitch_angle_test_g1_indices = np.array(pitch_angle_test_g1_indices,dtype=np.longlong)
+    pitch_angle_test_g1_indices = np.array(pitch_angle_test_g1_indices,dtype=np.longlong)
+    pitch_angle_test_g2_indices = np.array(pitch_angle_test_g2_indices,dtype=np.longlong)
+    pitch_angle_test_g1_senses = np.array(pitch_angle_test_g1_senses,dtype=np.byte)
+    pitch_angle_test_g2_senses = np.array(pitch_angle_test_g2_senses,dtype=np.byte)
     
     mean_estimated_segment_length = gradient_test_distances.mean()
     print_callback(f"Minimum estimated segment length {gradient_test_distances.min():.2f}")
@@ -375,13 +368,11 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     def squareoffset_logpdf(x): # not normalized, for efficiency+precision in main optimization
         return -(x/sigma_sq)/2 
             
-    # Pareto curvature prior
-    curvature_loc = -curvature_scale
-    assert curvature_scale>0
-    assert curvature_shape>0
-    def curvature_logpdf(c):
-        x = (c-curvature_loc)/curvature_scale 
-        return -(curvature_shape+1) * torch.log(x)
+    # Exponential pitch angle prior
+    assert pitch_angle_scale>0
+    pitch_exp_dist_lambda = 1/pitch_angle_scale 
+    def pitch_angle_logpdf(x):
+        return -pitch_exp_dist_lambda*x
         
     # Define posterior log likelihood
 
@@ -392,11 +383,10 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     gradient_test_p2_indices = np_to_torch(gradient_test_p2_indices)
     gradient_test_p1_types = np_to_torch(gradient_test_p1_types)
     gradient_test_p2_types = np_to_torch(gradient_test_p2_types)
-    curvature_test_g1_indices = np_to_torch(curvature_test_g1_indices)
-    curvature_test_g1_senses = np_to_torch(curvature_test_g1_senses)
-    curvature_test_g2_indices = np_to_torch(curvature_test_g2_indices)
-    curvature_test_g2_senses = np_to_torch(curvature_test_g2_senses)
-    curvature_test_distances = np_to_torch(curvature_test_distances)
+    pitch_angle_test_g1_indices = np_to_torch(pitch_angle_test_g1_indices)
+    pitch_angle_test_g1_senses = np_to_torch(pitch_angle_test_g1_senses)
+    pitch_angle_test_g2_indices = np_to_torch(pitch_angle_test_g2_indices)
+    pitch_angle_test_g2_senses = np_to_torch(pitch_angle_test_g2_senses)
     
     del gradient_test_distances
     all_points_arrays = [np_to_torch(a) for a in all_points_arrays]
@@ -426,7 +416,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         decoupled_bounds_upper = np.zeros(num_decoupled_points)+terrain_max_height
         return np.concatenate((offset_bounds_lower,decoupled_bounds_lower)),np.concatenate((offset_bounds_upper,decoupled_bounds_upper))
     
-    def minus_log_likelihood(opt_params):
+    def likelihood_breakdown(opt_params):
         point_offsets,decoupled_zs = unpack_opt_params(opt_params)
         
         estimated_zs = terrain_interpolator(all_points_arrays[ESTIMATED] + point_offsets)
@@ -444,21 +434,28 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         neighbour_grades = neighbour_heightdiffs*gradient_test_inv_distances
         neighbour_likelihood = (grade_logpdf(abs(neighbour_grades))*gradient_test_weights).sum()
         
-        curvature_likelihood = 0
-        if use_curvature_prior:
+        pitch_angle_likelihood = 0
+        if use_pitch_angle_prior:
             # gradients*sense gives gradient looking out from the pair midpoint
             # to assess slope continuity we need to invert one of these gradients again to simulate arriving and leaving
-            curvature_g1s = neighbour_grades[curvature_test_g1_indices]*curvature_test_g1_senses*-1
-            curvature_g2s = neighbour_grades[curvature_test_g2_indices]*curvature_test_g2_senses
-            curvatures = grade_change(curvature_g1s,curvature_g2s)
-            curvature_likelihood = (curvature_logpdf(curvatures)).sum() # fixme if we stick with this remove curvature_test_distances and rename curvature to angles or something
+            pitch_angle_g1s = neighbour_grades[pitch_angle_test_g1_indices]*pitch_angle_test_g1_senses*-1
+            pitch_angle_g2s = neighbour_grades[pitch_angle_test_g2_indices]*pitch_angle_test_g2_senses
+            pitch_angles = grade_change_angle(pitch_angle_g1s,pitch_angle_g2s)
+            pitch_angle_likelihood = pitch_angle_logpdf(pitch_angles).sum() 
         
         # Log likelihood of point offsets
         offset_square_distances = ((point_offsets**2).sum(axis=1))
         offset_likelihood = squareoffset_logpdf(offset_square_distances).sum()
-        print (f"NL {float(neighbour_likelihood)} OL {float(offset_likelihood)} CL {float(curvature_likelihood)}")
-
-        return -(neighbour_likelihood + offset_likelihood + curvature_likelihood)
+        
+        return neighbour_likelihood,offset_likelihood,pitch_angle_likelihood
+        
+    def likelihood_report(opt_params):
+        n,o,c = map(float,likelihood_breakdown(opt_params))
+        return n+o+c,f"   (Offset likelihood {o:.1f}, Slope likelihood {n:.1f}, Pitch angle likelihood {c:.1f})"
+        
+    def minus_log_likelihood(opt_params):
+        n,o,c = likelihood_breakdown(opt_params)
+        return -(n+o+c)
 
     def minus_log_likelihood_gradient(opt_params):
         if not torch.is_tensor(opt_params):
@@ -497,6 +494,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
                   squareoffset_logpdf=squareoffset_logpdf,
                   minus_log_likelihood=lambda x: float(minus_log_likelihood(x)),
                   minus_log_likelihood_gradient=minus_log_likelihood_gradient,
+                  likelihood_report=likelihood_report,
                   initial_guess=init_opt_params(),
                   reconstruct_geometries_from_optimizer_results=reconstruct_geometries,
                   mismatch_prior_std=mismatch_prior_std,
@@ -506,7 +504,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     return BayesianDrapeModel(**return_dict)
     
 def fit_model(model,maxiter,max_offset_dist=np.inf,print_callback=print):
-    initial_log_likelihood = -model.minus_log_likelihood(model.initial_guess)
+    initial_log_likelihood,initial_lik_report = model.likelihood_report(model.initial_guess)
     last_ll = initial_log_likelihood
     callback_count = 0
     
@@ -517,15 +515,15 @@ def fit_model(model,maxiter,max_offset_dist=np.inf,print_callback=print):
         lldiff = abs(ll-last_ll)
         last_ll = ll
         text = f"Iteration {callback_count} log likelihood = {ll:.1f} (-{lldiff:.3f})          "
-        #print_callback (f+"\r",end="")
-        print_callback(text)
+        print_callback (text+"\r",end="")
     
     lower_bounds,upper_bounds = model.optim_bounds(max_offset_dist)
-    print_callback (f"Starting optimizer log likelihood = {-model.minus_log_likelihood(model.initial_guess):.1f}")
+    print_callback (f"Starting optimizer log likelihood = {initial_log_likelihood:.1f}\n{initial_lik_report}")
     result = minimize(model.minus_log_likelihood,model.initial_guess,callback = callback,bounds=Bounds(lower_bounds,upper_bounds),jac=model.minus_log_likelihood_gradient,options=dict(maxiter=maxiter)) 
     print_callback (f"\nOptimizer terminated with status: {result['message']}")
     
     optimizer_results = result["x"]
+    print_callback(model.likelihood_report(optimizer_results)[1])
     print_callback ("Reconstructing geometries")
     return [LineString(geom) for geom in model.reconstruct_geometries_from_optimizer_results(optimizer_results)]
 
@@ -543,12 +541,11 @@ def fit_model_from_command_line_options():
     op.add_option("--OUTPUT",dest="outfile",help="[REQUIRED] Output feature class",metavar="FILE")
     op.add_option("--SLOPE-PRIOR-SCALE",dest="slope_prior_scale",help=f"Scale of exponential prior for path slope (equivalent to mean slope; defaults to {slope_prior_scale_default})",metavar="ANGLE_IN_DEGREES",type="float")
     op.add_option("--SPATIAL-MISMATCH-PRIOR-STD",dest="mismatch_prior_std",help="Standard deviation of zero-centred Gaussian prior for spatial mismatch (in spatial units of projection; defaults to half terrain raster cell size)",metavar="DISTANCE",type="float")
-    op.add_option("--SPATIAL-MISMATCH-MAX",dest="mismatch_max",help="Maximum permissible spatial mismatch (in spatial units of projection; defaults to 4x mismatch prior std)",metavar="DISTANCE",type="float")
+    op.add_option("--SPATIAL-MISMATCH-MAX",dest="mismatch_max",help="Maximum permissible spatial mismatch (in spatial units of projection; defaults to maximum terrain tile dimension)",metavar="DISTANCE",type="float")
     op.add_option("--SLOPE-CONTINUITY-PRIOR-SCALE",dest="slope_continuity",help=f"Slope continuity prior scale parameter (defaults to {slope_continuity_scale_default})",metavar="GRADE",type="float")
     op.add_option("--SLOPE-CONTINUITY-PRIOR-DESIRED-IMPACT",dest="slope_continuity_desired_impact",help=f"Compute slope continuity prior according to desired multiplier on probability of GRADE=0.5",metavar="MULTIPLIER",type="float")
-    op.add_option("--CURVATURE-PRIOR-SCALE",dest="curvature_scale",help=f"Curvature prior scale (defaults to {curvature_scale_default})",metavar="GRADE_CHANGE_PER_UNIT_LENGTH",type="float")
-    op.add_option("--CURVATURE-PRIOR-SHAPE",dest="curvature_shape",help=f"Curvature prior shape (defaults to {curvature_shape_default})",metavar="PARETO_SHAPE_PARAM",type="float")
-    op.add_option("--USE-CURVATURE-PRIOR",dest="test_curvature",action="store_true",help="Enable curvature prior",default=False)
+    op.add_option("--PITCH-ANGLE-PRIOR-SCALE",dest="pitch_angle_scale",help=f"Pitch angle prior scale (defaults to {pitch_angle_scale_default})",metavar="ANGLE_IN_DEGREES",type="float")
+    op.add_option("--USE-PITCH-ANGLE-PRIOR",dest="use_pitch_angle_prior",action="store_true",help="Enable pitch angle prior",default=False)
     op.add_option("--GPU",dest="cuda",action="store_true",help="Enable GPU acceleration")
     op.add_option("--SIMPLE-DRAPE-FIELD",dest="simpledrapefield",help="Instead of estimating heights, perform ordinary drape of features over terrain where FIELDNAME=true",metavar="FIELDNAME")
     op.add_option("--DECOUPLE-FIELD",dest="decouplefield",help="Instead of estimating heights, decouple features from terrain where FIELDNAME=true (useful for bridges/tunnels)",metavar="FIELDNAME")
@@ -590,6 +587,10 @@ def fit_model_from_command_line_options():
     else:
         decouple_geometries_mask = None
         
+    if not options.mismatch_max:
+        options.mismatch_max = max(abs(terrain_xs[1]-terrain_xs[0]),abs(terrain_ys[1]-terrain_ys[0]))
+        print (f"Maximum spatial mismatch set from larger terrain tile dimension: {options.mismatch_max:.2f}")
+        
     # Build model
         
     model = build_model(terrain_xs,terrain_ys,terrain_data,net_df.geometry,
@@ -597,17 +598,13 @@ def fit_model_from_command_line_options():
                         mismatch_prior_std = options.mismatch_prior_std,
                         slope_continuity_scale = options.slope_continuity,
                         slope_continuity_desired_impact = options.slope_continuity_desired_impact,
-                        use_curvature_prior = options.test_curvature,
-                        curvature_scale = options.curvature_scale,
-                        curvature_shape = options.curvature_shape,
+                        use_pitch_angle_prior = options.use_pitch_angle_prior,
+                        pitch_angle_scale = options.pitch_angle_scale,
                         simpledraped_geometries_mask = simpledrape_geometries_mask,
                         decoupled_geometries_mask = decouple_geometries_mask,
                         use_cuda = options.cuda)
     
     del terrain_xs,terrain_ys,terrain_data,terrain_raster
-    
-    if not options.mismatch_max:
-        options.mismatch_max = model.mismatch_prior_std * 4
     
     net_df.geometry = fit_model(model,options.maxiter,options.mismatch_max)
 
