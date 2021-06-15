@@ -218,3 +218,16 @@ would expon distance weighted curvature work better? no, it's not needed as an e
 
 ok so we need a version that supports any combination of expon grade, normal grade, expon angles.
 set mismatch max to tile size
+
+callback - maybe don't compute ll every time, it takes ages!
+
+now mcmc test 
+nb no bridges in these tests - fix
+exp grade alone
+norm grade alone known to be better
+exp grade plus angle
+
+WHEN I GET THIS ON GPU - INCLUDE BRIDGES IN TEST - SET HIGH MAXITER LIMIT
+
+mismatch and sloperatrat seem to have interaction. return to sloperat only.
+if it doesn't work, query max offset and try returning to direct slope param.
