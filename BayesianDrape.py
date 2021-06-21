@@ -17,6 +17,8 @@ from itertools import tee,combinations
 from shapely.geometry import LineString
 import torch
 from collections import namedtuple,defaultdict
+import time
+from torch.profiler import profile, record_function, ProfilerActivity
 
 def pairwise(iterable):
     "s -> (s0,s1), (s1,s2), (s2, s3), ..."
@@ -41,11 +43,20 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
 
     if use_cuda:
         torch.set_default_tensor_type(torch.cuda.DoubleTensor)
+        device = torch.device("cuda")
         def np_to_torch(x):
-            return torch.from_numpy(x).cuda()
+            if torch.is_tensor(x): 
+                assert x.is_cuda
+                return x
+            else:
+                return torch.from_numpy(x).cuda()
     else:
+        device = torch.device("cpu")
         def np_to_torch(x):
-            return torch.from_numpy(x)
+            if torch.is_tensor(x):
+                return x
+            else:
+                return torch.from_numpy(x)
             
     if slope_prior_scale==None:
         slope_prior_scale=slope_prior_scale_default
@@ -72,15 +83,14 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     terrain_min_height = float(terrain_data.min())
     terrain_max_height = float(terrain_data.max())
     print_callback(f"Terrain height range from {terrain_min_height:.2f} to {terrain_max_height:.2f}")
-    terrain_interpolator_not_pytorch = RegularGridInterpolator((terrain_xs,terrain_ys), terrain_data)
+    terrain_interpolator_internal = RegularGridInterpolator((terrain_xs,terrain_ys), terrain_data)
     del terrain_xs, terrain_ys, terrain_data
     
     def terrain_interpolator(points_to_interpolate):
         # calling contiguous() silences the performance warning from PyTorch
         # swapping dimensions on our definition of points throughout, and ensuring all tensors are created contiguous, gives maybe 10% speed boost - reverting for now as that's premature
-        if not torch.is_tensor(points_to_interpolate):
-            points_to_interpolate = np_to_torch(points_to_interpolate)
-        return terrain_interpolator_not_pytorch([points_to_interpolate[:,0].contiguous(),points_to_interpolate[:,1].contiguous()])
+        points_to_interpolate = np_to_torch(points_to_interpolate)
+        return terrain_interpolator_internal([points_to_interpolate[:,0].contiguous(),points_to_interpolate[:,1].contiguous()])
 
     # Todo: add points to linestrings where they cross raster cells or at least every cell-distance
     # (latter may make more sense as more expensive to compute gradients at cell boundaries)
@@ -394,20 +404,19 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     if len(all_points_arrays[FIXED]):
         fixed_zs = terrain_interpolator(all_points_arrays[FIXED])
     else:
-        fixed_zs = torch.zeros(0,dtype=torch.double)
+        fixed_zs = torch.zeros(0,dtype=torch.double,device=device)
     
     def unpack_opt_params(opt_params):
-        if not torch.is_tensor(opt_params): # may be the case if called from something other than the optimizer
-            opt_params = np_to_torch(opt_params)
+        opt_params = np_to_torch(opt_params)
         assert len(opt_params)==2*num_estimated_points+num_decoupled_points
         point_offsets = torch.reshape(opt_params[0:num_estimated_points*2],all_points_arrays[ESTIMATED].shape)
         decoupled_zs = opt_params[num_estimated_points*2:]
         return point_offsets,decoupled_zs
         
     def init_opt_params():
-        point_offsets = np_to_torch(np.zeros((num_estimated_points*2),float))
-        decoupled_zs = np_to_torch(init_guess_decoupled_zs())
-        return torch.cat((point_offsets,decoupled_zs))
+        point_offsets = np.zeros((num_estimated_points*2),float)
+        decoupled_zs = init_guess_decoupled_zs()
+        return np.concatenate((point_offsets,decoupled_zs),axis=None)
         
     def pack_optim_bounds(max_offset_dist):
         offset_bounds_lower = np.zeros(num_estimated_points*2)-max_offset_dist
@@ -434,8 +443,8 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         
         estimated_zs = terrain_interpolator(all_points_arrays[ESTIMATED] + point_offsets)
         
-        z1s = torch.zeros(num_gradient_tests,dtype=torch.double)
-        z2s = torch.zeros(num_gradient_tests,dtype=torch.double)
+        z1s = torch.zeros(num_gradient_tests,dtype=torch.double,device=device)
+        z2s = torch.zeros(num_gradient_tests,dtype=torch.double,device=device)
         z1s[z1s_mask_fixed] = fixed_zs[fixed_zs_p1_indices] 
         z2s[z2s_mask_fixed] = fixed_zs[fixed_zs_p2_indices]
         z1s[z1s_mask_est] = estimated_zs[est_zs_p1_indices]
@@ -467,15 +476,19 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         return n+o+c,f"   (Offset likelihood {o:.1f}, Slope likelihood {n:.1f}, Pitch angle likelihood {c:.1f})"
         
     def minus_log_likelihood(opt_params):
-        n,o,c = likelihood_breakdown(opt_params)
-        return -(n+o+c)
+        with record_function("LOGLIK"):
+            n,o,c = likelihood_breakdown(opt_params)
+            return -(n+o+c)
+
+    def mll_cpu(opt_params):
+        return minus_log_likelihood(opt_params).cpu()
 
     def minus_log_likelihood_gradient(opt_params):
-        if not torch.is_tensor(opt_params):
+        with record_function("GRADIENT"):
             opt_params = np_to_torch(opt_params)
-        opt_params.requires_grad = True
-        minus_log_likelihood(opt_params).backward() 
-        return opt_params.grad
+            opt_params.requires_grad = True
+            minus_log_likelihood(opt_params).backward() 
+            return opt_params.grad.cpu()
         
     def reconstruct_geometries(opt_results):
         final_offsets,final_decoupled_zs = unpack_opt_params(opt_results)
@@ -505,7 +518,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     
     return_dict = dict(grade_logpdf=grade_logpdf,
                   squareoffset_logpdf=squareoffset_logpdf,
-                  minus_log_likelihood=lambda x: float(minus_log_likelihood(x)),
+                  minus_log_likelihood=lambda x: float(mll_cpu(x)),
                   minus_log_likelihood_gradient=minus_log_likelihood_gradient,
                   likelihood_report=likelihood_report,
                   initial_guess=init_opt_params(),
@@ -518,6 +531,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     
 def fit_model(model,maxiter,max_offset_dist=np.inf,print_callback=print):
     initial_log_likelihood,initial_lik_report = model.likelihood_report(model.initial_guess)
+
     last_ll = initial_log_likelihood
     callback_count = 0
     reportiter = 5
@@ -527,15 +541,20 @@ def fit_model(model,maxiter,max_offset_dist=np.inf,print_callback=print):
         callback_count += 1
         if callback_count%reportiter==0:
             ll = float(-model.minus_log_likelihood(x))
-            lldiff = abs(ll-last_ll)
+            lldiff = abs(ll-last_ll)/reportiter
             last_ll = ll
-            text = f"Iteration {callback_count} log likelihood = {ll:.1f} (-{lldiff:.3f} over {reportiter} iterations)          "
+            text = f"Iteration {callback_count} log likelihood = {ll:.1f} ({reportiter} iteration average -{lldiff:.3f})          "
             print_callback (text+"\r",end="")
     
     lower_bounds,upper_bounds = model.optim_bounds(max_offset_dist)
     print_callback (f"Starting optimizer log likelihood = {initial_log_likelihood:.1f}\n{initial_lik_report}")
-    result = minimize(model.minus_log_likelihood,model.initial_guess,callback = callback,bounds=Bounds(lower_bounds,upper_bounds),jac=model.minus_log_likelihood_gradient,options=dict(maxiter=maxiter)) 
+    start_time = time.time()
+    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=False, with_stack=True) as prof:
+        result = minimize(model.minus_log_likelihood,model.initial_guess,callback = callback,bounds=Bounds(lower_bounds,upper_bounds),jac=model.minus_log_likelihood_gradient,options=dict(maxiter=maxiter)) 
+    end_time = time.time()
     print_callback (f"\nOptimizer terminated with status: {result['message']}")
+    print(prof.key_averages(group_by_stack_n=5).table(sort_by="cpu_time_total", row_limit=50))
+    print_callback (f"Elapsed time {end_time-start_time}s")
     
     optimizer_results = result["x"]
     end_log_likelihood,end_lik_report = model.likelihood_report(optimizer_results)
