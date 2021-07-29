@@ -10,15 +10,18 @@ from scipy.optimize import minimize,Bounds
 from scipy.special import erfc
 import scipy.sparse
 from scipy.sparse import lil_matrix,coo_matrix
-from torch_interpolations import RegularGridInterpolator
+#from torch_interpolations import RegularGridInterpolator
+from terrain_interpolator import TerrainInterpolator
 import numpy as np
 from ordered_set import OrderedSet
 from itertools import tee,combinations
 from shapely.geometry import LineString
 import torch
+import torch.nn as nn
 from collections import namedtuple,defaultdict
 import time
-from torch.profiler import profile, record_function, ProfilerActivity
+#from torch.profiler import profile, record_function, ProfilerActivity
+from typing import Tuple
 
 def pairwise(iterable):
     "s -> (s0,s1), (s1,s2), (s2, s3), ..."
@@ -83,14 +86,13 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     terrain_min_height = float(terrain_data.min())
     terrain_max_height = float(terrain_data.max())
     print_callback(f"Terrain height range from {terrain_min_height:.2f} to {terrain_max_height:.2f}")
-    terrain_interpolator_internal = RegularGridInterpolator((terrain_xs,terrain_ys), terrain_data)
+    terrain_interpolator_internal = TerrainInterpolator(terrain_xs,terrain_ys, terrain_data)
     del terrain_xs, terrain_ys, terrain_data
     
-    def terrain_interpolator(points_to_interpolate):
+    def terrain_interpolator(points_to_interpolate : torch.Tensor):
         # calling contiguous() silences the performance warning from PyTorch
         # swapping dimensions on our definition of points throughout, and ensuring all tensors are created contiguous, gives maybe 10% speed boost - reverting for now as that's premature
-        points_to_interpolate = np_to_torch(points_to_interpolate)
-        return terrain_interpolator_internal([points_to_interpolate[:,0].contiguous(),points_to_interpolate[:,1].contiguous()])
+        return terrain_interpolator_internal.forward(points_to_interpolate[:,0].contiguous(),points_to_interpolate[:,1].contiguous())
 
     # Todo: add points to linestrings where they cross raster cells or at least every cell-distance
     # (latter may make more sense as more expensive to compute gradients at cell boundaries)
@@ -302,7 +304,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         for pt in decoupled_group_boundary_points:
             pt_type,pt_index = pt
             pt_x,pt_y = all_points_arrays[pt_type][pt_index]
-            boundary_pt_z = float(terrain_interpolator(np.array([[pt_x,pt_y]]))[0]) #  could do these all together if performance ever a problem
+            boundary_pt_z = float(terrain_interpolator(np_to_torch(np.array([[pt_x,pt_y]]))[0])) #  could do these all together if performance ever a problem
             ind = decoupled_graph_index(pt_type,pt_index)
             assert ind >= num_decoupled_points
             # n.b. if performance is ever an issue the method below can take multiple indices at once
@@ -369,14 +371,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         print (f"Probability multiplier attributable to slope continuity prior for grade=0.0: {impact_sc_grade0}")
         print (f"Probability multiplier attributable to slope continuity prior for grade=0.5: {impact_sc_grade05}")
     
-    def grade_logpdf(grade): # not normalized, for efficiency+precision in main optimization
-        return -grade_exp_dist_lambda*grade - slope_continuity_param*grade**2 
 
-    # 2d Gaussian offset prior
-    sigma = mismatch_prior_std
-    sigma_sq = sigma**2
-    def squareoffset_logpdf(x): # not normalized, for efficiency+precision in main optimization
-        return -(x/sigma_sq)/2 
             
     # Exponential pitch angle prior
     assert pitch_angle_scale>0
@@ -402,14 +397,19 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     all_points_arrays = [np_to_torch(a) for a in all_points_arrays]
 
     if len(all_points_arrays[FIXED]):
-        fixed_zs = terrain_interpolator(all_points_arrays[FIXED])
+        fixed_zs = terrain_interpolator(np_to_torch(all_points_arrays[FIXED]))
     else:
         fixed_zs = torch.zeros(0,dtype=torch.double,device=device)
     
-    def unpack_opt_params(opt_params):
-        opt_params = np_to_torch(opt_params)
+    num_estimated_points: Final = num_estimated_points    
+
+    assert all_points_arrays[ESTIMATED].shape == (num_estimated_points,2)
+
+    def unpack_opt_params(opt_params,num_estimated_points:int,num_decoupled_points:int) -> Tuple[torch.Tensor,torch.Tensor]:
+        # num_estimated_points etc passed as args to allow torch.jit.script compilation
+		# though likely neater to move this inside the module eventually, along with most initialization
         assert len(opt_params)==2*num_estimated_points+num_decoupled_points
-        point_offsets = torch.reshape(opt_params[0:num_estimated_points*2],all_points_arrays[ESTIMATED].shape)
+        point_offsets = torch.reshape(opt_params[0:num_estimated_points*2],(num_estimated_points,2))
         decoupled_zs = opt_params[num_estimated_points*2:]
         return point_offsets,decoupled_zs
         
@@ -425,75 +425,135 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         decoupled_bounds_upper = np.zeros(num_decoupled_points)+terrain_max_height
         return np.concatenate((offset_bounds_lower,decoupled_bounds_lower)),np.concatenate((offset_bounds_upper,decoupled_bounds_upper))
     
-    z1s_mask_fixed = gradient_test_p1_types==FIXED
+    class likelihood_breakdown_torch_module(nn.Module):
+        # wrap likelihood_breakdown in class to allow closure over the following constants:
+        # FIXME YOU CAN'T PUT TENSORS HERE BUT PASSING TO INIT WILL WORK
+        # SHORT TERM TEST PASS ALL TO INIT IN A DICT AND UNPACK THERE
+        # LONG TERM MAYBE MAKE ALL ABOVE CODE PART OF INIT
+        # testing with (bayesiandrape) D:\BayesianDrape>python BayesianDrape.py --TERRAIN-INPUT=data/all_os50_terrain.tif --POLYLINE-INPUT=data/biggertest.shp --OUTPUT=data/testout.shp
+        tmnum_estimated_points : torch.jit.Final[int] = num_estimated_points
+        tmnum_decoupled_points : torch.jit.Final[int] = num_decoupled_points
+        tmnum_gradient_tests : torch.jit.Final[int] = num_gradient_tests
+        tmdevice: torch.jit.Final[torch.device] = device
+        
+        tmgrade_exp_dist_lambda: torch.jit.Final[float] = grade_exp_dist_lambda
+        tmslope_continuity_param: torch.jit.Final[float] = slope_continuity_param
+        def grade_logpdf(self,grade): # not normalized, for efficiency+precision in main optimization
+            return -self.tmgrade_exp_dist_lambda*grade - self.tmslope_continuity_param*grade**2 
+
+        # 2d Gaussian offset prior
+        tmsigma_sq: torch.jit.Final[float] = mismatch_prior_std**2
+        def squareoffset_logpdf(self,x): # not normalized, for efficiency+precision in main optimization
+            return -(x/self.tmsigma_sq)/2 #fixme remove divide?
+        
+        def __init__(self,params):
+            super(likelihood_breakdown_torch_module,self).__init__()
+            self.estimated_points = params["estimated_points"]
+            self.fixed_zs = params["fixed_zs"]
+            self.z1s_mask_fixed = params["z1s_mask_fixed"]
+            self.z2s_mask_fixed = params["z2s_mask_fixed"]
+            self.z1s_mask_est = params["z1s_mask_est"]
+            self.z2s_mask_est = params["z2s_mask_est"]
+            self.z1s_mask_decoupled = params["z1s_mask_decoupled"]
+            self.z2s_mask_decoupled = params["z2s_mask_decoupled"]
+            self.gradient_test_inv_distances = params["gradient_test_inv_distances"]
+            self.gradient_test_weights = params["gradient_test_weights"]
+            self.fixed_zs_p1_indices = params["fixed_zs_p1_indices"]
+            self.fixed_zs_p2_indices = params["fixed_zs_p2_indices"]
+            self.est_zs_p1_indices = params["est_zs_p1_indices"]
+            self.est_zs_p2_indices = params["est_zs_p2_indices"]
+            self.decoupled_zs_p1_indices = params["decoupled_zs_p1_indices"]
+            self.decoupled_zs_p2_indices = params["decoupled_zs_p2_indices"]
+
+        def forward(self,opt_params):
+            point_offsets ,decoupled_zs = unpack_opt_params(opt_params,self.tmnum_estimated_points,self.tmnum_decoupled_points)
+            
+            points_to_interp = self.estimated_points + point_offsets
+            interp_xs = points_to_interp[:,0].contiguous()
+            interp_ys = points_to_interp[:,1].contiguous()
+            estimated_zs = terrain_interpolator_internal(interp_xs,interp_ys)
+            
+            z1s = torch.zeros(self.tmnum_gradient_tests,dtype=torch.double,device=self.tmdevice)
+            z2s = torch.zeros(self.tmnum_gradient_tests,dtype=torch.double,device=self.tmdevice)
+            z1s[self.z1s_mask_fixed] = self.fixed_zs[self.fixed_zs_p1_indices] 
+            z2s[self.z2s_mask_fixed] = self.fixed_zs[self.fixed_zs_p2_indices]
+            z1s[self.z1s_mask_est] = estimated_zs[self.est_zs_p1_indices]
+            z2s[self.z2s_mask_est] = estimated_zs[self.est_zs_p2_indices]
+            z1s[self.z1s_mask_decoupled] = decoupled_zs[self.decoupled_zs_p1_indices]
+            z2s[self.z2s_mask_decoupled] = decoupled_zs[self.decoupled_zs_p2_indices]
+            
+            neighbour_heightdiffs = z2s-z1s
+            neighbour_grades = neighbour_heightdiffs*self.gradient_test_inv_distances
+            neighbour_likelihood = (self.grade_logpdf(abs(neighbour_grades))*self.gradient_test_weights).sum()
+            
+            pitch_angle_likelihood = 0
+#            if use_pitch_angle_prior:
+#                # gradients*sense gives gradient looking out from the pair midpoint
+#                # to assess slope continuity we need to invert one of these gradients again to simulate arriving and leaving
+#                pitch_angle_g1s = neighbour_grades[pitch_angle_test_g1_indices]*pitch_angle_test_g1_senses*-1
+#                pitch_angle_g2s = neighbour_grades[pitch_angle_test_g2_indices]*pitch_angle_test_g2_senses
+#                pitch_angles = grade_change_angle(pitch_angle_g1s,pitch_angle_g2s)
+#                pitch_angle_likelihood = pitch_angle_logpdf(pitch_angles).sum() 
+            
+            # Log likelihood of point offsets
+            offset_square_distances = (torch.sum(point_offsets**2,1))
+            offset_likelihood = self.squareoffset_logpdf(offset_square_distances).sum()
+            
+            return neighbour_likelihood,offset_likelihood,pitch_angle_likelihood
+
+    z1s_mask_fixed = gradient_test_p1_types==FIXED # fixme change these masks to array indices? test speed
     z2s_mask_fixed = gradient_test_p2_types==FIXED
     z1s_mask_est = gradient_test_p1_types==ESTIMATED
     z2s_mask_est = gradient_test_p2_types==ESTIMATED
     z1s_mask_decoupled = gradient_test_p1_types==DECOUPLED
     z2s_mask_decoupled = gradient_test_p2_types==DECOUPLED
-    fixed_zs_p1_indices = gradient_test_p1_indices[z1s_mask_fixed]
-    fixed_zs_p2_indices = gradient_test_p2_indices[z2s_mask_fixed]
-    est_zs_p1_indices = gradient_test_p1_indices[z1s_mask_est]
-    est_zs_p2_indices = gradient_test_p2_indices[z2s_mask_est]
-    decoupled_zs_p1_indices = gradient_test_p1_indices[z1s_mask_decoupled]
-    decoupled_zs_p2_indices = gradient_test_p2_indices[z2s_mask_decoupled]
+
+    torch_tensor_params = { "estimated_points": all_points_arrays[ESTIMATED],
+        "fixed_zs": fixed_zs,
+        "z1s_mask_fixed": z1s_mask_fixed,
+        "z2s_mask_fixed": z2s_mask_fixed,
+        "z1s_mask_est": z1s_mask_est,
+        "z2s_mask_est": z2s_mask_est,
+        "z1s_mask_decoupled": z1s_mask_decoupled,
+        "z2s_mask_decoupled": z2s_mask_decoupled,
+        "gradient_test_inv_distances": gradient_test_inv_distances,
+        "gradient_test_weights": gradient_test_weights,
+        "fixed_zs_p1_indices": gradient_test_p1_indices[z1s_mask_fixed],
+        "fixed_zs_p2_indices": gradient_test_p2_indices[z2s_mask_fixed],
+        "est_zs_p1_indices": gradient_test_p1_indices[z1s_mask_est],
+        "est_zs_p2_indices": gradient_test_p2_indices[z2s_mask_est],
+        "decoupled_zs_p1_indices": gradient_test_p1_indices[z1s_mask_decoupled],
+        "decoupled_zs_p2_indices": gradient_test_p2_indices[z2s_mask_decoupled]
+        }
     
+    likelihood_torch_module = likelihood_breakdown_torch_module(torch_tensor_params)
+    likelihood_torch_jit = torch.jit.script(likelihood_torch_module)
+
     def likelihood_breakdown(opt_params):
-        point_offsets,decoupled_zs = unpack_opt_params(opt_params)
-        
-        estimated_zs = terrain_interpolator(all_points_arrays[ESTIMATED] + point_offsets)
-        
-        z1s = torch.zeros(num_gradient_tests,dtype=torch.double,device=device)
-        z2s = torch.zeros(num_gradient_tests,dtype=torch.double,device=device)
-        z1s[z1s_mask_fixed] = fixed_zs[fixed_zs_p1_indices] 
-        z2s[z2s_mask_fixed] = fixed_zs[fixed_zs_p2_indices]
-        z1s[z1s_mask_est] = estimated_zs[est_zs_p1_indices]
-        z2s[z2s_mask_est] = estimated_zs[est_zs_p2_indices]
-        z1s[z1s_mask_decoupled] = decoupled_zs[decoupled_zs_p1_indices]
-        z2s[z2s_mask_decoupled] = decoupled_zs[decoupled_zs_p2_indices]
-        
-        neighbour_heightdiffs = z2s-z1s
-        neighbour_grades = neighbour_heightdiffs*gradient_test_inv_distances
-        neighbour_likelihood = (grade_logpdf(abs(neighbour_grades))*gradient_test_weights).sum()
-        
-        pitch_angle_likelihood = 0
-        if use_pitch_angle_prior:
-            # gradients*sense gives gradient looking out from the pair midpoint
-            # to assess slope continuity we need to invert one of these gradients again to simulate arriving and leaving
-            pitch_angle_g1s = neighbour_grades[pitch_angle_test_g1_indices]*pitch_angle_test_g1_senses*-1
-            pitch_angle_g2s = neighbour_grades[pitch_angle_test_g2_indices]*pitch_angle_test_g2_senses
-            pitch_angles = grade_change_angle(pitch_angle_g1s,pitch_angle_g2s)
-            pitch_angle_likelihood = pitch_angle_logpdf(pitch_angles).sum() 
-        
-        # Log likelihood of point offsets
-        offset_square_distances = ((point_offsets**2).sum(axis=1))
-        offset_likelihood = squareoffset_logpdf(offset_square_distances).sum()
-        
-        return neighbour_likelihood,offset_likelihood,pitch_angle_likelihood
-        
+        opt_params = np_to_torch(opt_params)
+        return likelihood_torch_jit.forward(opt_params)
+
     def likelihood_report(opt_params):
         n,o,c = map(float,likelihood_breakdown(opt_params))
         return n+o+c,f"   (Offset likelihood {o:.1f}, Slope likelihood {n:.1f}, Pitch angle likelihood {c:.1f})"
         
     def minus_log_likelihood(opt_params):
-        with record_function("LOGLIK"):
-            n,o,c = likelihood_breakdown(opt_params)
-            return -(n+o+c)
+        n,o,c = likelihood_breakdown(opt_params)
+        return -(n+o+c)
 
     def mll_cpu(opt_params):
         return minus_log_likelihood(opt_params).cpu()
 
     def minus_log_likelihood_gradient(opt_params):
-        with record_function("GRADIENT"):
-            opt_params = np_to_torch(opt_params)
-            opt_params.requires_grad = True
-            minus_log_likelihood(opt_params).backward() 
-            return opt_params.grad.cpu()
+        opt_params = np_to_torch(opt_params)
+        opt_params.requires_grad = True
+        minus_log_likelihood(opt_params).backward() 
+        return opt_params.grad.cpu()
         
     def reconstruct_geometries(opt_results):
-        final_offsets,final_decoupled_zs = unpack_opt_params(opt_results)
+        final_offsets,final_decoupled_zs = unpack_opt_params(np_to_torch(opt_results),num_estimated_points,num_decoupled_points)
         final_log_likelihood = -minus_log_likelihood(opt_results)
-        final_estimated_zs = terrain_interpolator(all_points_arrays[ESTIMATED] + final_offsets)
+        final_estimated_zs = terrain_interpolator(np_to_torch(all_points_arrays[ESTIMATED] + final_offsets))
         
         # Print report on offsets
         offset_distances = ((final_offsets**2).sum(axis=1))**0.5
@@ -516,8 +576,8 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
 
         return [LineString([get_point_output(pt_index) for pt_index in row_point_indices]) for row_point_indices in point_indices_all_rows]
     
-    return_dict = dict(grade_logpdf=grade_logpdf,
-                  squareoffset_logpdf=squareoffset_logpdf,
+    return_dict = dict(grade_logpdf=likelihood_torch_module.grade_logpdf,
+                  squareoffset_logpdf=likelihood_torch_module.squareoffset_logpdf,
                   minus_log_likelihood=lambda x: float(mll_cpu(x)),
                   minus_log_likelihood_gradient=minus_log_likelihood_gradient,
                   likelihood_report=likelihood_report,
@@ -549,11 +609,14 @@ def fit_model(model,maxiter,max_offset_dist=np.inf,print_callback=print):
     lower_bounds,upper_bounds = model.optim_bounds(max_offset_dist)
     print_callback (f"Starting optimizer log likelihood = {initial_log_likelihood:.1f}\n{initial_lik_report}")
     start_time = time.time()
-    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=False, with_stack=True) as prof:
+    #with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=False, with_stack=False) as prof:
+    if True:
         result = minimize(model.minus_log_likelihood,model.initial_guess,callback = callback,bounds=Bounds(lower_bounds,upper_bounds),jac=model.minus_log_likelihood_gradient,options=dict(maxiter=maxiter)) 
     end_time = time.time()
     print_callback (f"\nOptimizer terminated with status: {result['message']}")
-    print(prof.key_averages(group_by_stack_n=5).table(sort_by="cpu_time_total", row_limit=50))
+    #print(prof.key_averages(group_by_stack_n=5).table(sort_by="cpu_time_total", row_limit=50))
+    #print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=10))
+    
     print_callback (f"Elapsed time {end_time-start_time}s")
     
     optimizer_results = result["x"]
