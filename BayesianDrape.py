@@ -127,6 +127,14 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     
     terrain_xs = np_to_torch(terrain_index_xs.copy())
     terrain_ys = np_to_torch(terrain_index_ys.copy())
+    
+    def regularly_spaced(x):
+        xd = np.diff(x)
+        return np.all(xd==xd[0])
+        
+    assert regularly_spaced(terrain_xs)
+    assert regularly_spaced(terrain_ys)
+    
     terrain_data = np_to_torch(terrain_zs.copy())
     terrain_min_height = float(terrain_data.min())
     terrain_max_height = float(terrain_data.max())
@@ -623,6 +631,7 @@ def fit_model_from_command_line_options():
     import rioxarray # gdal raster is another option 
     import pandas as pd
     import geopandas as gp
+    from pyproj.crs import CRS
     
     maxiter_default = 1000
     
@@ -659,8 +668,11 @@ def fit_model_from_command_line_options():
     net_df = gp.read_file(options.shapefile)
     terrain_raster = rioxarray.open_rasterio(options.terrainfile)
 
-    print (f"{net_df.crs=}\nterrain raster crs??")
-    # todo assert these projections are the same
+    net_crs = net_df.crs
+    terr_crs = CRS(terrain_raster.rio.crs)
+    if not net_crs.equals(terr_crs,True):
+        op.error(f"Coordinate reference systems of polylines and terrain do not appear to match\n  Polyline CRS: {net_crs.name}\n  Terrain CRS:  {terr_crs.name}\nReproject or fix CRS metadata then try again.")
+    print(f"Using {net_crs.name}")
     
     terrain_xs = (np.array(terrain_raster.x,np.float64))
     terrain_ys = (np.flip(np.array(terrain_raster.y,np.float64)) )
