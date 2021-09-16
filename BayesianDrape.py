@@ -14,7 +14,8 @@ from torch_interpolations import RegularGridInterpolator
 import numpy as np
 from ordered_set import OrderedSet
 from itertools import tee,combinations
-from shapely.geometry import LineString
+import shapely.wkb
+from shapely.geometry import LineString,MultiLineString,MultiPoint,Point
 import torch
 from collections import namedtuple,defaultdict
 
@@ -26,6 +27,62 @@ def pairwise(iterable):
 
 def grade_change_angle(g1,g2):
     return abs(torch.atan(g1)-torch.atan(g2))/np.pi*180
+
+def insert_vertices(line,splitpoints,tolerance):
+    '''insert new vertices on a line as close as possible to each splitpoint;
+    ignore new vertices if closer than tolerance to existing ones'''
+    existing_points = [(line.project(Point(xy)),xy) for xy in line.coords]
+    potential_cuts = sorted([(line.project(p),p) for p in splitpoints])
+    
+    # discard cuts close to previous cuts
+    cuts = []
+    last_cut_dist = 0
+    for c in potential_cuts:
+        cut_dist,p = c
+        if cut_dist-last_cut_dist>tolerance:
+            cuts.append(c)
+            last_cut_dist = cut_dist
+        
+    newcoords = []
+    while existing_points: 
+        next_pt_dist,next_pt = existing_points[0]
+        if not cuts:
+            # if no cuts left, output remaining points and end
+            # note that conversely if no points are left, remaining cuts are discarded
+            existing_points.pop(0)
+            newcoords.append(next_pt)
+        else:
+            next_cut_dist,next_cut = cuts[0]
+            if abs(next_pt_dist-next_cut_dist)<tolerance:
+                cuts.pop(0) # discard cuts close to existing points
+            elif next_pt_dist<next_cut_dist:
+                existing_points.pop(0)
+                newcoords.append(next_pt)
+            else:
+                cuts.pop(0)
+                newcoords.append(next_cut)
+    line.coords = newcoords
+    
+def insert_points_on_gridlines(line,grid,tolerance):
+    # shapely does weird things if line has z!
+    # especially on lines with vertical segments, even if they're not an intersection
+    # so, lines where we want to keep z should NOT be passed to this function
+    assert not grid.has_z
+    assert not line.has_z 
+    
+    intersection = line.intersection(grid)
+    if not intersection.is_empty:
+        # replace any lines in GeometryCollection with points
+        point_only_intersection = []
+        for item in list(intersection):
+            if item.geom_type=='Point':
+                point_only_intersection.append(item)
+            elif item.geom_type=='LineString':
+                point_only_intersection += [Point(c) for c in item.coords]
+            else:
+                assert False # intersection between lines is not point or linestring
+
+        insert_vertices(line,point_only_intersection,tolerance)
 
 slope_continuity_scale_default = 0.42
 slope_prior_scale_default = 2.2
@@ -61,10 +118,12 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         simpledraped_geometries_mask = [0]*len(geometries)
     if decoupled_geometries_mask is None:
         decoupled_geometries_mask = [0]*len(geometries)
+    cellsizex = abs(terrain_index_xs[1]-terrain_index_xs[0])
+    cellsizey = abs(terrain_index_ys[1]-terrain_index_ys[0])
     if mismatch_prior_std is None:
-        cellsizex = abs(terrain_index_xs[1]-terrain_index_xs[0])
-        cellsizey = abs(terrain_index_ys[1]-terrain_index_ys[0])
         mismatch_prior_std = max(cellsizex,cellsizey)/2
+    
+    new_vertex_tolerance = min(cellsizex,cellsizey)/100
     
     terrain_xs = np_to_torch(terrain_index_xs.copy())
     terrain_ys = np_to_torch(terrain_index_ys.copy())
@@ -73,7 +132,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     terrain_max_height = float(terrain_data.max())
     print_callback(f"Terrain height range from {terrain_min_height:.2f} to {terrain_max_height:.2f}")
     terrain_interpolator_not_pytorch = RegularGridInterpolator((terrain_xs,terrain_ys), terrain_data)
-    del terrain_xs, terrain_ys, terrain_data
+    del terrain_data
     
     def terrain_interpolator(points_to_interpolate):
         # calling contiguous() silences the performance warning from PyTorch
@@ -82,9 +141,24 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
             points_to_interpolate = np_to_torch(points_to_interpolate)
         return terrain_interpolator_not_pytorch([points_to_interpolate[:,0].contiguous(),points_to_interpolate[:,1].contiguous()])
 
-    # Todo: add points to linestrings where they cross raster cells or at least every cell-distance
-    # (latter may make more sense as more expensive to compute gradients at cell boundaries)
-
+    # Add points on lines wherever they cross terrain model grid cells 
+    xmin = terrain_xs.min()
+    xmax = terrain_xs.max()
+    ymin = terrain_ys.min()
+    ymax = terrain_ys.max()
+    x_gridlines = [((x,ymin),(x,ymax)) for x in terrain_xs]
+    y_gridlines = [((xmin,y),(xmax,y)) for y in terrain_ys]
+    del terrain_xs, terrain_ys
+    gridlines = MultiLineString(x_gridlines+y_gridlines)
+    del x_gridlines,y_gridlines
+    for geom in geometries: 
+        geom.coords = geom.simplify(0,False).coords # remove any duplicate points
+        use_input_z = False #fixme when we introduce fixed z inputs we must skip flattening and inserting gridlines for them
+        if not use_input_z: 
+            geom.coords = shapely.wkb.loads(shapely.wkb.dumps(geom, output_dimension=2)).coords # flatten
+            insert_points_on_gridlines(geom,gridlines,new_vertex_tolerance)
+    del gridlines
+    
     # Build point model: we represent each linestring with a point index list 
     # point (x,y)s are initially stored in OrderedSets so we can give the same index to matching line endpoints; these OrderedSets are later converted to arrays
     # We define them now so we can simultaneously define an enum for the corresponding point type that belongs in each
@@ -209,7 +283,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
             for point1,point2 in pairwise(zip(xs,ys)):
                 type1,index1 = get_point_type_and_index(point1)
                 type2,index2 = get_point_type_and_index(point2)
-                assert (type1,index1)!=(type2,index2)
+                assert (type1,index1)!=(type2,index2) # duplicate point
                 yield (type1,index1,point1),(type2,index2,point2)
     
     # pass through data again to determine which fixed points are next to others for pitch_angle test
