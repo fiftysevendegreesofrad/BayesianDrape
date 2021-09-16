@@ -13,7 +13,8 @@ from scipy.sparse import lil_matrix,coo_matrix
 from torch_interpolations import RegularGridInterpolator
 import numpy as np
 from ordered_set import OrderedSet
-from itertools import tee,combinations
+from itertools import tee,combinations,groupby
+import operator
 import shapely.wkb
 from shapely.geometry import LineString,MultiLineString,MultiPoint,Point
 import torch
@@ -24,6 +25,10 @@ def pairwise(iterable):
     a, b = tee(iterable)
     next(b, None)
     return zip(a, b)
+
+def remove_consecutive_duplicates(iterable):
+    # based on unique_justseen in the itertools docs
+    return list(map(next, map(operator.itemgetter(1), groupby(iterable))))
 
 def grade_change_angle(g1,g2):
     return abs(torch.atan(g1)-torch.atan(g2))/np.pi*180
@@ -160,11 +165,12 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     gridlines = MultiLineString(x_gridlines+y_gridlines)
     del x_gridlines,y_gridlines
     for geom in geometries: 
-        geom.coords = geom.simplify(0,False).coords # remove any duplicate points
         use_input_z = False #fixme when we introduce fixed z inputs we must skip flattening and inserting gridlines for them
         if not use_input_z: 
-            geom.coords = shapely.wkb.loads(shapely.wkb.dumps(geom, output_dimension=2)).coords # flatten
-            insert_points_on_gridlines(geom,gridlines,new_vertex_tolerance)
+            geom.coords = shapely.wkb.loads(shapely.wkb.dumps(geom, output_dimension=2)).coords # flatten to 2d *before* removing duplicates
+        geom.coords = remove_consecutive_duplicates(geom.coords)
+        if not use_input_z:
+            insert_points_on_gridlines(geom,gridlines,new_vertex_tolerance) # to ensure every terrain point is interpolated
     del gridlines
     
     # Build point model: we represent each linestring with a point index list 
