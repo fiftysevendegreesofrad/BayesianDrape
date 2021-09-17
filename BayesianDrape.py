@@ -90,9 +90,11 @@ def insert_points_on_gridlines(line,grid,tolerance):
             else:
                 print (item.geom_type)
                 assert False # intersection between lines is not point or linestring
-
         insert_vertices(line,point_only_intersection,tolerance)
-
+        return len(point_only_intersection)
+    else:
+        return 0
+        
 slope_continuity_scale_default = 0.42
 slope_prior_scale_default = 2.2
 pitch_angle_scale_default = 1.28
@@ -159,6 +161,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         return terrain_interpolator_not_pytorch([points_to_interpolate[:,0].contiguous(),points_to_interpolate[:,1].contiguous()])
 
     # Add points on lines wherever they cross terrain model grid cells 
+    print ("Inserting extra vertices on polylines to interpolate terrain")
     xmin = terrain_xs.min()
     xmax = terrain_xs.max()
     ymin = terrain_ys.min()
@@ -168,14 +171,16 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     del terrain_xs, terrain_ys
     gridlines = MultiLineString(x_gridlines+y_gridlines)
     del x_gridlines,y_gridlines
+    inserted_vertex_count = 0
     for geom in geometries: 
         use_input_z = False #fixme when we introduce fixed z inputs we must skip flattening and inserting gridlines for them
         if not use_input_z: 
             geom.coords = shapely.wkb.loads(shapely.wkb.dumps(geom, output_dimension=2)).coords # flatten to 2d *before* removing duplicates
         geom.coords = remove_consecutive_duplicates(geom.coords)
         if not use_input_z:
-            insert_points_on_gridlines(geom,gridlines,new_vertex_tolerance) # to ensure every terrain point is interpolated
+            inserted_vertex_count += insert_points_on_gridlines(geom,gridlines,new_vertex_tolerance) # to ensure every terrain point is interpolated
     del gridlines
+    print (f"  ({inserted_vertex_count} extra vertices added)")
     
     # Build point model: we represent each linestring with a point index list 
     # point (x,y)s are initially stored in OrderedSets so we can give the same index to matching line endpoints; these OrderedSets are later converted to arrays
@@ -209,6 +214,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
                 point_to_type[coords] = DECOUPLED
         else: assert False    
 
+    print ("Building spatial model")
     # first pass through data to resolve point types
     for geom,decoupled,simpledraped in zip(geometries,decoupled_geometries_mask,simpledraped_geometries_mask):
         xs,ys = geom.coords.xy
@@ -649,7 +655,7 @@ def fit_model_from_command_line_options():
     op.add_option("--TERRAIN-INPUT",dest="terrainfile",help="[REQUIRED] Terrain model",metavar="FILE")
     op.add_option("--POLYLINE-INPUT",dest="shapefile",help="[REQUIRED] Polyline feature class e.g. network or GPS trace",metavar="FILE")
     op.add_option("--OUTPUT",dest="outfile",help="[REQUIRED] Output feature class",metavar="FILE")
-    op.add_option("--SLOPE-PRIOR-SCALE",dest="slope_prior_scale",help=f"Scale of exponential prior for path slope (equivalent to mean slope; defaults to {slope_prior_scale_default})",metavar="ANGLE_IN_DEGREES",type="float")
+    op.add_option("--SLOPE-PRIOR-SCALE",dest="slope_prior_scale",help=f"Scale of exponential prior for path slope (equivalent to mean slope; defaults to {slope_prior_scale_default}; measured in degrees but prior is over grade)",metavar="ANGLE_IN_DEGREES",type="float")
     op.add_option("--SPATIAL-MISMATCH-PRIOR-STD",dest="mismatch_prior_std",help="Standard deviation of zero-centred Gaussian prior for spatial mismatch (in spatial units of projection; defaults to half terrain raster cell size)",metavar="DISTANCE",type="float")
     op.add_option("--SPATIAL-MISMATCH-MAX",dest="mismatch_max",help="Maximum permissible spatial mismatch (in spatial units of projection; defaults to maximum terrain tile dimension)",metavar="DISTANCE",type="float")
     op.add_option("--SLOPE-CONTINUITY-PRIOR-SCALE",dest="slope_continuity",help=f"Slope continuity prior scale parameter (defaults to {slope_continuity_scale_default})",metavar="GRADE",type="float")
