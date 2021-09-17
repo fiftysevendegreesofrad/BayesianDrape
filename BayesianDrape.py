@@ -67,7 +67,7 @@ def insert_vertices(line,splitpoints,tolerance):
                 cuts.pop(0)
                 newcoords.append(next_cut)
     line.coords = newcoords
-    
+
 def insert_points_on_gridlines(line,grid,tolerance):
     # shapely does weird things if line has z!
     # especially on lines with vertical segments, even if they're not an intersection
@@ -75,9 +75,12 @@ def insert_points_on_gridlines(line,grid,tolerance):
     assert not grid.has_z
     assert not line.has_z 
     
-    intersection = line.intersection(grid)
+    intersection = line.intersection(grid) 
+    assert intersection.geom_type in ['MultiPoint', 'Point', 'LineString', 'GeometryCollection', 'MultiLineString']
     if not intersection.is_empty:
-        # replace any lines in GeometryCollection with points
+        # flatten to all points
+        if intersection.geom_type not in ['GeometryCollection','MultiPoint','MultiLineString']:
+            intersection = [intersection] # treat as a collection of 1 item
         point_only_intersection = []
         for item in list(intersection):
             if item.geom_type=='Point':
@@ -85,6 +88,7 @@ def insert_points_on_gridlines(line,grid,tolerance):
             elif item.geom_type=='LineString':
                 point_only_intersection += [Point(c) for c in item.coords]
             else:
+                print (item.geom_type)
                 assert False # intersection between lines is not point or linestring
 
         insert_vertices(line,point_only_intersection,tolerance)
@@ -628,7 +632,7 @@ def fit_model(model,maxiter,max_offset_dist=np.inf,print_callback=print):
     
     optimizer_results = result["x"]
     end_log_likelihood,end_lik_report = model.likelihood_report(optimizer_results)
-    print_callback (f"Final optimizer log likelihood = {end_log_likelihood:.1f}\n{end_lik_report}")
+    print_callback (f"Final optimizer log likelihood after {callback_count} iterations = {end_log_likelihood:.1f}\n{end_lik_report}")
     
     print_callback ("Reconstructing geometries")
     return [LineString(geom) for geom in model.reconstruct_geometries_from_optimizer_results(optimizer_results)]
@@ -657,6 +661,7 @@ def fit_model_from_command_line_options():
     op.add_option("--SIMPLE-DRAPE-FIELD",dest="simpledrapefield",help="Instead of estimating heights, perform ordinary drape of features over terrain where FIELDNAME=true",metavar="FIELDNAME")
     op.add_option("--DECOUPLE-FIELD",dest="decouplefield",help="Instead of estimating heights, decouple features from terrain where FIELDNAME=true (useful for bridges/tunnels)",metavar="FIELDNAME")
     op.add_option("--MAXITER",dest="maxiter",help=f"Maximum number of optimizer iterations (defaults to {maxiter_default})",metavar="N",type="int",default=maxiter_default)
+    op.add_option("--IGNORE-PROJ-MISMATCH",dest="ignore_proj_mismatch",action="store_true",help="Ignore mismatched projections",default=False)
     (options,args) = op.parse_args()
     
     if options.cuda and not torch.cuda.is_available():
@@ -678,8 +683,13 @@ def fit_model_from_command_line_options():
     net_crs = net_df.crs
     terr_crs = CRS(terrain_raster.rio.crs)
     if not net_crs.equals(terr_crs,True):
-        op.error(f"Coordinate reference systems of polylines and terrain do not appear to match\n  Polyline CRS: {net_crs.name}\n  Terrain CRS:  {terr_crs.name}\nReproject or fix CRS metadata then try again.")
-    print(f"Using {net_crs.name}")
+        print(f"Coordinate reference systems:\n  Polyline CRS: {net_crs.name}\n  Terrain CRS:  {terr_crs.name}")
+        if not options.ignore_proj_mismatch:
+            op.error(f"Coordinate reference systems of polylines and terrain do not appear to match. Reproject, fix CRS metadata or use --IGNORE-PROJ-MISMATCH at your peril.")
+        else:
+            print("Ignoring mismatched projections, don't say I didn't warn you!")
+    else:
+        print(f"Using {net_crs.name}")
     
     terrain_xs = (np.array(terrain_raster.x,np.float64))
     terrain_ys = (np.flip(np.array(terrain_raster.y,np.float64)) )
