@@ -30,8 +30,8 @@ def remove_consecutive_duplicates(iterable):
     # based on unique_justseen in the itertools docs
     return list(map(next, map(operator.itemgetter(1), groupby(iterable))))
 
-def grade_change(g1,g2):
-    return torch.tan(abs(torch.atan(g1)-torch.atan(g2)))
+def grade_change_angle(g1,g2):
+    return abs(torch.atan(g1)-torch.atan(g2))/np.pi*180
 
 def insert_vertices(line,splitpoints,tolerance):
     '''insert new vertices on a line as close as possible to each splitpoint;
@@ -460,11 +460,10 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     def squareoffset_logpdf(x): # not normalized, for efficiency+precision in main optimization
         return -(x/sigma_sq)/2 
             
-    # Exponential pitch *grade* prior
+    # Exponential pitch angle prior
     assert pitch_angle_scale>0
-    pitch_angle_grade = np.tan(pitch_angle_scale/180*np.pi)
-    pitch_exp_dist_lambda = 1/pitch_angle_grade
-    def pitch_grade_logpdf(x):
+    pitch_exp_dist_lambda = 1/pitch_angle_scale 
+    def pitch_angle_logpdf(x):
         return -pitch_exp_dist_lambda*x
         
     # Define posterior log likelihood
@@ -544,10 +543,10 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         if use_pitch_angle_prior:
             # gradients*sense gives gradient looking out from the pair midpoint
             # to assess slope continuity we need to invert one of these gradients again to simulate arriving and leaving
-            pitch_g1s = neighbour_grades[pitch_angle_test_g1_indices]*pitch_angle_test_g1_senses*-1
-            pitch_g2s = neighbour_grades[pitch_angle_test_g2_indices]*pitch_angle_test_g2_senses
-            pitch_grades = grade_change(pitch_g1s,pitch_g2s)
-            pitch_angle_likelihood = pitch_grade_logpdf(pitch_grades).sum() 
+            pitch_angle_g1s = neighbour_grades[pitch_angle_test_g1_indices]*pitch_angle_test_g1_senses*-1
+            pitch_angle_g2s = neighbour_grades[pitch_angle_test_g2_indices]*pitch_angle_test_g2_senses
+            pitch_angles = grade_change_angle(pitch_angle_g1s,pitch_angle_g2s)
+            pitch_angle_likelihood = pitch_angle_logpdf(pitch_angles).sum() 
         
         # Log likelihood of point offsets
         offset_square_distances = ((point_offsets**2).sum(axis=1))
@@ -650,12 +649,12 @@ def fit_model_from_command_line_options():
     op.add_option("--TERRAIN-INPUT",dest="terrainfile",help="[REQUIRED] Terrain model",metavar="FILE")
     op.add_option("--POLYLINE-INPUT",dest="shapefile",help="[REQUIRED] Polyline feature class e.g. network or GPS trace",metavar="FILE")
     op.add_option("--OUTPUT",dest="outfile",help="[REQUIRED] Output feature class",metavar="FILE")
-    op.add_option("--SLOPE-PRIOR-SCALE",dest="slope_prior_scale",help=f"Scale of exponential prior for path grade (defaults to {slope_prior_scale_default}; expressed in degrees though prior is over grades)",metavar="ANGLE_IN_DEGREES",type="float")
-    op.add_option("--SPATIAL-MISMATCH-PRIOR-SCALE",dest="mismatch_prior_std",help="Scale of zero-centred Gaussian prior for spatial mismatch (in spatial units of projection; defaults to half terrain raster cell size)",metavar="DISTANCE",type="float")
+    op.add_option("--SLOPE-PRIOR-SCALE",dest="slope_prior_scale",help=f"Scale of exponential prior for path slope (equivalent to mean slope; defaults to {slope_prior_scale_default})",metavar="ANGLE_IN_DEGREES",type="float")
+    op.add_option("--SPATIAL-MISMATCH-PRIOR-STD",dest="mismatch_prior_std",help="Standard deviation of zero-centred Gaussian prior for spatial mismatch (in spatial units of projection; defaults to half terrain raster cell size)",metavar="DISTANCE",type="float")
     op.add_option("--SPATIAL-MISMATCH-MAX",dest="mismatch_max",help="Maximum permissible spatial mismatch (in spatial units of projection; defaults to maximum terrain tile dimension)",metavar="DISTANCE",type="float")
     op.add_option("--SLOPE-CONTINUITY-PRIOR-SCALE",dest="slope_continuity",help=f"Slope continuity prior scale parameter (defaults to {slope_continuity_scale_default})",metavar="GRADE",type="float")
     op.add_option("--SLOPE-CONTINUITY-PRIOR-DESIRED-IMPACT",dest="slope_continuity_desired_impact",help=f"Compute slope continuity prior according to desired multiplier on probability of GRADE=0.5",metavar="MULTIPLIER",type="float")
-    op.add_option("--PITCH-ANGLE-PRIOR-SCALE",dest="pitch_angle_scale",help=f"Pitch angle prior scale (defaults to {pitch_angle_scale_default}; expressed in degrees though prior is over grades)",metavar="ANGLE_IN_DEGREES",type="float")
+    op.add_option("--PITCH-ANGLE-PRIOR-SCALE",dest="pitch_angle_scale",help=f"Pitch angle prior scale (defaults to {pitch_angle_scale_default})",metavar="ANGLE_IN_DEGREES",type="float")
     op.add_option("--USE-PITCH-ANGLE-PRIOR",dest="use_pitch_angle_prior",action="store_true",help="Enable pitch angle prior",default=False)
     op.add_option("--GPU",dest="cuda",action="store_true",help="Enable GPU acceleration")
     op.add_option("--SIMPLE-DRAPE-FIELD",dest="simpledrapefield",help="Instead of estimating heights, perform ordinary drape of features over terrain where FIELDNAME=true",metavar="FIELDNAME")
