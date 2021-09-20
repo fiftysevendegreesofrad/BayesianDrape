@@ -19,6 +19,7 @@ import shapely.wkb
 from shapely.geometry import LineString,MultiLineString,MultiPoint,Point
 import torch
 from collections import namedtuple,defaultdict
+import time
 
 def pairwise(iterable):
     "s -> (s0,s1), (s1,s2), (s2, s3), ..."
@@ -617,17 +618,21 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
 def fit_model(model,maxiter,max_offset_dist=np.inf,print_callback=print):
     initial_log_likelihood,initial_lik_report = model.likelihood_report(model.initial_guess)
     last_ll = initial_log_likelihood
+    last_time = time.perf_counter()
     callback_count = 0
     reportiter = 5
     
     def callback(x):
-        nonlocal last_ll,callback_count
+        nonlocal last_ll,last_time,callback_count
         callback_count += 1
         if callback_count%reportiter==0:
             ll = float(-model.minus_log_likelihood(x))
             lldiff = abs(ll-last_ll)
             last_ll = ll
-            text = f"Iteration {callback_count} log likelihood = {ll:.1f} (-{lldiff:.3f} over {reportiter} iterations)          "
+            t = time.perf_counter()
+            tdiff = t - last_time
+            last_time = t
+            text = f"Iteration {callback_count} log likelihood = {ll:.1f} (-{lldiff:.3f} over {reportiter} iterations) ({tdiff/reportiter*100:.2f}s per 100 iterations)         "
             print_callback (text+"\r",end="")
     
     lower_bounds,upper_bounds = model.optim_bounds(max_offset_dist)
@@ -667,8 +672,12 @@ def fit_model_from_command_line_options():
     op.add_option("--DECOUPLE-FIELD",dest="decouplefield",help="Instead of estimating heights, decouple features from terrain where FIELDNAME=true (useful for bridges/tunnels)",metavar="FIELDNAME")
     op.add_option("--MAXITER",dest="maxiter",help=f"Maximum number of optimizer iterations (defaults to {maxiter_default})",metavar="N",type="int",default=maxiter_default)
     op.add_option("--IGNORE-PROJ-MISMATCH",dest="ignore_proj_mismatch",action="store_true",help="Ignore mismatched projections",default=False)
+    op.add_option("--NUM_THREADS",dest="threads",help="Set number of threads for multiprocessing (defaults to number of available cores)",type="int",metavar="N")
     (options,args) = op.parse_args()
-    
+
+    if options.threads:
+        torch.set_num_threads(options.threads)    
+
     if options.cuda and not torch.cuda.is_available():
             op.error("PyTorch CUDA is not available; try running without --GPU")
     
