@@ -457,6 +457,8 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         impact_sc_grade05 = grade_pdf_normalized(slope_continuity_scale,grade_scale,0.5)/grade_pdf2_normalized(grade_scale,0.5)
         print (f"Probability multiplier attributable to slope continuity prior for grade=0.0: {impact_sc_grade0}")
         print (f"Probability multiplier attributable to slope continuity prior for grade=0.5: {impact_sc_grade05}")
+    else:
+        print ("No slope continuity param")
     
     def grade_logpdf(grade): # not normalized, for efficiency+precision in main optimization
         return -grade_exp_dist_lambda*grade - slope_continuity_param*grade**2 
