@@ -440,18 +440,23 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         impact_sc_grade05 = grade_pdf_normalized(slope_continuity_scale,grade_scale,0.5)/grade_pdf_normalized(np.inf,grade_scale,0.5)
         print (f"Probability multiplier attributable to slope continuity prior for grade=0.0: {impact_sc_grade0}")
         print (f"Probability multiplier attributable to slope continuity prior for grade=0.5: {impact_sc_grade05}")
-    else:
-        print ("No slope continuity prior")
     
     # Grade prior is a mixture of exponential and Gaussian
     def grade_logpdf(grade): # not normalized, for efficiency+precision in main optimization
         return -grade_exp_dist_lambda*grade - slope_continuity_param*grade**2 
 
     # 2d Gaussian offset prior
-    squareoffset_param = normal_logpdf_param_from_scale(mismatch_prior_scale)
-    def squareoffset_logpdf(x): # not normalized, for efficiency+precision in main optimization
-        return -squareoffset_param*x # note this is a normal distribution over the offset, but we are passed square offset
-            
+    if mismatch_prior_scale>0:
+        squareoffset_param = normal_logpdf_param_from_scale(mismatch_prior_scale)
+        def squareoffset_logpdf(x): # not normalized, for efficiency+precision in main optimization
+            return -squareoffset_param*x # note this is a normal distribution over the offset, but we are passed square offset
+    else:
+        # allows setting mismatch_prior_scale==0 to get ordinary drape
+        def squareoffset_logpdf(x):
+            res = torch.zeros(x.shape)
+            res[x!=0]=-np.inf
+            return res
+        
     # Exponential pitch angle prior
     pitch_exp_dist_lambda = exp_logpdf_param_from_scale(pitch_angle_scale)
     def pitch_angle_logpdf(x):
