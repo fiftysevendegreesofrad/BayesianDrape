@@ -17,17 +17,14 @@ from timeit import Timer
 def np_to_torch(x):
     return torch.from_numpy(x)
 
-def lltest(net_file,original_lls,original_gradient,times=False,curvature=False):
+def lltest(net_file,original_lls,original_gradient,times=False):
     net_df = gp.read_file(net_file)
     terrain_raster = rioxarray.open_rasterio("data/all_os50_terrain.tif")
     terrain_xs = (np.array(terrain_raster.x,np.float64))
     terrain_ys = (np.flip(np.array(terrain_raster.y,np.float64)) )
     terrain_data = (np.flip(terrain_raster.data[0],axis=0).T)
     
-    if curvature:
-        model = BayesianDrape.build_model(terrain_xs,terrain_ys,terrain_data,net_df.geometry,use_curvature_prior=True,slope_continuity_scale=np.inf)
-    else:
-        model = BayesianDrape.build_model(terrain_xs,terrain_ys,terrain_data,net_df.geometry)
+    model = BayesianDrape.build_model(terrain_xs,terrain_ys,terrain_data,net_df.geometry)
     
     num_estimated_points = int(model.initial_guess.shape[0]/2)
     print (f"{num_estimated_points=}")
@@ -58,17 +55,11 @@ def lltest(net_file,original_lls,original_gradient,times=False,curvature=False):
 
         
 def test_log_likelihood_small():
-    lltest("data/test_awkward_link.shp",[438.26806190052116, 449.6772850303616, 472.9893712044086, 510.243906868909, 574.0965200345075],[-0.58284698, -0.13337304])
-
-def test_curvature():
-    lltest("data/test_awkward_link.shp",[438.26806190052116, 449.6772850303616, 472.9893712044086, 510.243906868909, 574.0965200345075],[-0.58284698, -0.13337304],curvature=True)
+    lltest("data/test_awkward_link.shp",[680.192947025223, 680.4777291420818, 737.0745926244945, 833.148016849311, 955.2640711942598],[0.83615318,0.19133717])
 
 def test_log_likelihood_large():
-    lltest("data/biggertest.shp",[17495.7796065754, 17764.888612489307, 18402.46316941143, 19342.22708606701, 20535.16545590596],[-0.0964554,0.00744646])
+    lltest("data/biggertest.shp",[25570.221193171794, 26236.077909753058, 27929.089912274794, 30338.01634808881, 33324.13862614907],[-0.1377182,   0.01063199])
 
-def test_log_likelihood_time():
-    lltest("data/biggertest.shp",[17495.7796065754, 17764.888612489307, 18402.46316941143, 19342.22708606701, 20535.16545590596],[-0.0964554,0.00744646],True)
-    
 def test_autodiff_cell_boundary():
     '''Ensure there is still a gradient on boundaries of raster cells'''
     terrain_raster = rioxarray.open_rasterio("data/all_os50_terrain.tif")
@@ -90,15 +81,4 @@ def test_autodiff_cell_boundary():
     for point in [(355000,205000),(355025,205025),(355050,205050),(355075,205075)]:
         print_point_inter_and_grad(point)
 
-def is_nearly(a,b):
-    return abs(a-b)<0.1
-
-def test_grade_change_as_angle():
-    assert is_nearly(BayesianDrape.grade_change(0,1),1)
-    assert is_nearly(BayesianDrape.grade_change(1,2),abs(np.tan(18.4*np.pi/180)))
-    assert is_nearly(BayesianDrape.grade_change(1,-2),abs(np.tan(108.4*np.pi/180)))
-    assert is_nearly(BayesianDrape.grade_change(2,-1),abs(np.tan(108.4*np.pi/180)))
-    assert is_nearly(BayesianDrape.grade_change(2,0),abs(np.tan(63.4*np.pi/180)))
     
-if __name__ == '__main__':
-    test_log_likelihood_time()
