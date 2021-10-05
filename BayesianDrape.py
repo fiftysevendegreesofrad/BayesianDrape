@@ -135,7 +135,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     
     def regularly_spaced(x):
         xd = np.diff(x)
-        return np.all(xd==xd[0])
+        return np.all(np.abs(xd-xd[0])<xd[0]/100000)
         
     assert regularly_spaced(terrain_xs)
     assert regularly_spaced(terrain_ys)
