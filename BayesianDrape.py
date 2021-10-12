@@ -102,8 +102,8 @@ pitch_angle_scale_default = np.inf
 
 def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
                 geometries,
-                slope_prior_scale=slope_prior_scale_default,mismatch_prior_scale=None,slope_continuity_scale=slope_continuity_scale_default,
-                pitch_angle_scale=pitch_angle_scale_default,
+                slope_prior_scale=slope_prior_scale_default,mismatch_prior_scale=None,slope_continuity_scale=None,
+                pitch_angle_scale=None,
                 simpledraped_geometries_mask=None,decoupled_geometries_mask=None,
                 use_cuda=False,
                 print_callback=print):
@@ -116,19 +116,29 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         def np_to_torch(x):
             return torch.from_numpy(x)
             
-    use_pitch_angle_prior = pitch_angle_scale < np.inf
-    
     # computed parameter defaults
     if simpledraped_geometries_mask is None:
         simpledraped_geometries_mask = [0]*len(geometries)
     if decoupled_geometries_mask is None:
         decoupled_geometries_mask = [0]*len(geometries)
+    
     cellsizex = abs(terrain_index_xs[1]-terrain_index_xs[0])
     cellsizey = abs(terrain_index_ys[1]-terrain_index_ys[0])
     if mismatch_prior_scale is None:
         mismatch_prior_scale = max(cellsizex,cellsizey)/2
     
-    new_vertex_tolerance = min(cellsizex,cellsizey)/100
+    # constant parameter defaults 
+    # (can't use default arguments as we want to support caller passing None)
+    if slope_prior_scale is None:
+        slope_prior_scale = slope_prior_scale_default
+    if slope_continuity_scale is None:
+        slope_continuity_scale = slope_continuity_scale_default
+    if pitch_angle_scale is None:
+        pitch_angle_scale = pitch_angle_scale_default
+    
+    use_pitch_angle_prior = pitch_angle_scale < np.inf
+    
+    new_vertex_tolerance = min(cellsizex,cellsizey)/100 # sensible magic number should suit all purposes
     
     terrain_xs = np_to_torch(terrain_index_xs.copy())
     terrain_ys = np_to_torch(terrain_index_ys.copy())
