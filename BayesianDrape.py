@@ -96,7 +96,7 @@ def insert_points_on_gridlines(line,grid,tolerance):
     else:
         return 0
         
-slope_continuity_scale_default = np.inf
+slope_continuity_scale_default = 90
 slope_prior_scale_default = 2.66
 pitch_angle_scale_default = 1.28
 
@@ -122,8 +122,10 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     if decoupled_geometries_mask is None:
         decoupled_geometries_mask = [0]*len(geometries)
     
-    cellsizex = abs(terrain_index_xs[1]-terrain_index_xs[0])
-    cellsizey = abs(terrain_index_ys[1]-terrain_index_ys[0])
+    cellstepx = terrain_index_xs[1]-terrain_index_xs[0]
+    cellstepy = terrain_index_ys[1]-terrain_index_ys[0]
+    cellsizex = abs(cellstepx)
+    cellsizey = abs(cellstepy)
     if mismatch_prior_scale is None:
         mismatch_prior_scale = max(cellsizex,cellsizey)/2
     
@@ -139,6 +141,17 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     use_pitch_angle_prior = pitch_angle_scale < np.inf
     
     new_vertex_tolerance = min(cellsizex,cellsizey)/100 # sensible magic number should suit all purposes
+
+    # ensure terrain has positively incrementing axes to keep interpolator happy
+    if cellstepx<0:
+        terrain_index_xs = np.flip(terrain_index_xs)
+        terrain_zs = np.flip(terrain_zs,axis=1)
+    if cellstepy<0:
+        terrain_index_ys = np.flip(terrain_index_ys)
+        terrain_zs = np.flip(terrain_zs,axis=0)
+        
+    # change from yx to xy ordering
+    terrain_zs = terrain_zs.T
     
     terrain_xs = np_to_torch(terrain_index_xs.copy())
     terrain_ys = np_to_torch(terrain_index_ys.copy())
@@ -423,7 +436,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     
     # Exponential*Normal grade prior
     grade_scale = np.tan(slope_prior_scale*np.pi/180)
-    slope_continuity_grade_scale = np.tan(slope_continuity_scale*np.pi/180)
+    slope_continuity_grade_scale = np.tan(slope_continuity_scale*np.pi/180) if slope_continuity_scale<90 else np.inf
     print_callback(f"Slope prior scale of {slope_prior_scale}\N{DEGREE SIGN} gives grade of {grade_scale*100:.1f}%")
     
     def normal_logpdf_param_from_scale(scale):
@@ -694,15 +707,15 @@ def fit_model_from_command_line_options():
     if not net_crs.equals(terr_crs,True):
         print(f"Coordinate reference systems:\n  Polyline CRS: {net_crs.name}\n  Terrain CRS:  {terr_crs.name}")
         if not options.ignore_proj_mismatch:
-            op.error(f"Coordinate reference systems of polylines and terrain do not appear to match. Reproject, fix CRS metadata or use --IGNORE-PROJ-MISMATCH at your peril.")
+            op.error(f"Coordinate reference systems of polylines and terrain do not appear to match. Reproject, fix CRS metadata or - if you think you know better - use --IGNORE-PROJ-MISMATCH at your peril.")
         else:
             print("Ignoring mismatched projections, don't say I didn't warn you!")
     else:
         print(f"Using {net_crs.name}")
     
     terrain_xs = (np.array(terrain_raster.x,np.float64))
-    terrain_ys = (np.flip(np.array(terrain_raster.y,np.float64)) )
-    terrain_data = (np.flip(terrain_raster.data[0],axis=0).T) # fixme does this generalize to other projections?
+    terrain_ys = (np.array(terrain_raster.y,np.float64))
+    terrain_data = terrain_raster.data[0]
     
     if options.simpledrapefield and options.decouplefield and np.logical_and(net_df[options.simpledrapefield],net_df[options.decouplefield]).any():
         print ("Input contains rows which are both fixed/simple-draped and decoupled - decoupled takes precedence")
