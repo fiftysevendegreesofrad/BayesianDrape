@@ -96,9 +96,9 @@ def insert_points_on_gridlines(line,grid,tolerance):
     else:
         return 0
         
-slope_continuity_scale_default = 0.42
-slope_prior_scale_default = 2.2
-pitch_angle_scale_default = np.inf
+slope_continuity_scale_default = np.inf
+slope_prior_scale_default = 2.66
+pitch_angle_scale_default = 1.28
 
 def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
                 geometries,
@@ -421,8 +421,9 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     
     print_callback(f"Spatial mismatch prior scale is {mismatch_prior_scale}")
     
-    # Exponential grade prior
+    # Exponential*Normal grade prior
     grade_scale = np.tan(slope_prior_scale*np.pi/180)
+    slope_continuity_grade_scale = np.tan(slope_continuity_scale*np.pi/180)
     print_callback(f"Slope prior scale of {slope_prior_scale}\N{DEGREE SIGN} gives grade of {grade_scale*100:.1f}%")
     
     def normal_logpdf_param_from_scale(scale):
@@ -433,23 +434,23 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         return 1/scale
     
     grade_exp_dist_lambda = exp_logpdf_param_from_scale(grade_scale)
-    slope_continuity_param = normal_logpdf_param_from_scale(slope_continuity_scale)
+    slope_continuity_param = normal_logpdf_param_from_scale(slope_continuity_grade_scale)
     
-    # Normalized grade_pdf used to give print some messages about physical interpretation to slope_continuity_scale, though not used in main optimization
-    def grade_pdf_normalized(slope_continuity_scale,grade_scale,grade):
-        if slope_continuity_scale==np.inf:
+    # Normalized grade_pdf used to give print some messages about physical interpretation to slope_continuity_grade_scale, though not used in main optimization
+    def grade_pdf_normalized(slope_continuity_grade_scale,grade_scale,grade):
+        if slope_continuity_grade_scale==np.inf:
             return grade_scale**-1*np.exp(-grade/grade_scale)
         else:
-            slope_continuity_param_local = normal_logpdf_param_from_scale(slope_continuity_scale)
+            slope_continuity_param_local = normal_logpdf_param_from_scale(slope_continuity_grade_scale)
             norm_const = (np.exp(1/(4*slope_continuity_param_local*grade_scale**2))*(np.pi**0.5) * erfc(1/(2*slope_continuity_param_local**0.5*grade_scale)))/(2*slope_continuity_param_local**0.5)
             return norm_const**-1*np.exp(-grade/grade_scale-slope_continuity_param_local*grade**2) 
     
     if slope_continuity_param>0:
-        print_callback(f"Slope continuity prior scale (expressed as grade) is {slope_continuity_scale*100:.1f}%")
-        impact_sc_grade0 = grade_pdf_normalized(slope_continuity_scale,grade_scale,0)/grade_pdf_normalized(np.inf,grade_scale,0)
-        impact_sc_grade05 = grade_pdf_normalized(slope_continuity_scale,grade_scale,0.5)/grade_pdf_normalized(np.inf,grade_scale,0.5)
-        print (f"Probability multiplier attributable to slope continuity prior for grade=0.0: {impact_sc_grade0}")
-        print (f"Probability multiplier attributable to slope continuity prior for grade=0.5: {impact_sc_grade05}")
+        print_callback(f"Slope continuity prior scale of {slope_continuity_scale}\N{DEGREE SIGN} gives grade of {slope_continuity_grade_scale*100:.1f}%")
+        impact_sc_grade0 = grade_pdf_normalized(slope_continuity_grade_scale,grade_scale,0)/grade_pdf_normalized(np.inf,grade_scale,0)
+        impact_sc_grade05 = grade_pdf_normalized(slope_continuity_grade_scale,grade_scale,0.5)/grade_pdf_normalized(np.inf,grade_scale,0.5)
+        print_callback (f" * Probability multiplier attributable to slope continuity prior for grade=0.0: {impact_sc_grade0}")
+        print_callback (f" * Probability multiplier attributable to slope continuity prior for grade=0.5: {impact_sc_grade05}")
     
     # Grade prior is a mixture of exponential and Gaussian
     def grade_logpdf(grade): # not normalized, for efficiency+precision in main optimization
@@ -653,7 +654,7 @@ def fit_model_from_command_line_options():
     import geopandas as gp
     from pyproj.crs import CRS
     
-    maxiter_default = 1000
+    maxiter_default = 10000
     
     op = OptionParser()
     op.add_option("--TERRAIN-INPUT",dest="terrainfile",help="[REQUIRED] Terrain model",metavar="FILE")
@@ -662,7 +663,7 @@ def fit_model_from_command_line_options():
     op.add_option("--SLOPE-PRIOR-SCALE",dest="slope_prior_scale",help=f"Scale of exponential prior for path slope (equivalent to mean slope; defaults to {slope_prior_scale_default}; measured in degrees but prior is over grade)",metavar="ANGLE_IN_DEGREES",type="float")
     op.add_option("--SPATIAL-MISMATCH-PRIOR-SCALE",dest="mismatch_prior_scale",help="Standard deviation of zero-centred Gaussian prior for spatial mismatch (in spatial units of projection; defaults to half terrain raster cell size)",metavar="DISTANCE",type="float")
     op.add_option("--SPATIAL-MISMATCH-MAX",dest="mismatch_max",help="Maximum permissible spatial mismatch (in spatial units of projection; defaults to maximum terrain tile dimension)",metavar="DISTANCE",type="float")
-    op.add_option("--SLOPE-CONTINUITY-PRIOR-SCALE",dest="slope_continuity",help=f"Slope continuity prior scale parameter (defaults to {slope_continuity_scale_default})",metavar="GRADE",type="float")
+    op.add_option("--SLOPE-CONTINUITY-PRIOR-SCALE",dest="slope_continuity",help=f"Scale of normal (slope continuity) prior for path slope (equivalent to mean slope; defaults to {slope_continuity_scale_default}; measured in degrees but prior is over grade)",metavar="DEGREES",type="float")
     op.add_option("--PITCH-ANGLE-PRIOR-SCALE",dest="pitch_angle_scale",help=f"Pitch angle prior scale (defaults to {pitch_angle_scale_default})",metavar="ANGLE_IN_DEGREES",type="float")
     op.add_option("--GPU",dest="cuda",action="store_true",help="Enable GPU acceleration")
     op.add_option("--SIMPLE-DRAPE-FIELD",dest="simpledrapefield",help="Instead of estimating heights, perform ordinary drape of features over terrain where FIELDNAME=true",metavar="FIELDNAME")
