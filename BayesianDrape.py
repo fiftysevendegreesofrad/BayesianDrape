@@ -104,7 +104,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
                 geometries,
                 slope_prior_scale=slope_prior_scale_default,mismatch_prior_scale=None,slope_continuity_scale=None,
                 pitch_angle_scale=None,
-                simpledraped_geometries_mask=None,decoupled_geometries_mask=None,
+                fix_geometries_mask=None,decoupled_geometries_mask=None,
                 use_cuda=False,
                 print_callback=print):
 
@@ -117,8 +117,8 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
             return torch.from_numpy(x)
             
     # computed parameter defaults
-    if simpledraped_geometries_mask is None:
-        simpledraped_geometries_mask = [0]*len(geometries)
+    if fix_geometries_mask is None:
+        fix_geometries_mask = [0]*len(geometries)
     if decoupled_geometries_mask is None:
         decoupled_geometries_mask = [0]*len(geometries)
     
@@ -177,6 +177,17 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
             points_to_interpolate = np_to_torch(points_to_interpolate)
         return terrain_interpolator_not_pytorch([points_to_interpolate[:,0].contiguous(),points_to_interpolate[:,1].contiguous()])
 
+    # Feature type model: decoupled takes precedence over fixed as people are likely to fix large flat areas and decouples to smaller features like bridges within them
+    num_point_types = 3
+    ESTIMATED,FIXED,DECOUPLED = range(num_point_types)
+    def get_feature_type(decoupled,fixed):
+        if decoupled:
+            return DECOUPLED
+        elif fixed:
+            return FIXED
+        else:
+            return ESTIMATED
+
     # Add points on lines wherever they cross terrain model grid cells 
     print ("Inserting extra vertices on polylines to interpolate terrain")
     xmin = terrain_xs.min()
@@ -189,8 +200,8 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     gridlines = MultiLineString(x_gridlines+y_gridlines)
     del x_gridlines,y_gridlines
     inserted_vertex_count = 0
-    for geom in geometries: 
-        use_input_z = False #fixme when we introduce fixed z inputs we must skip flattening and inserting gridlines for them
+    for geom,fix,decouple in zip(geometries,fix_geometries_mask,decoupled_geometries_mask): 
+        use_input_z = get_feature_type(decouple,fix)==FIXED
         if not use_input_z: 
             geom.coords = shapely.wkb.loads(shapely.wkb.dumps(geom, output_dimension=2)).coords # flatten to 2d *before* removing duplicates
         geom.coords = remove_consecutive_duplicates(geom.coords)
@@ -201,24 +212,14 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     
     # Build point model: we represent each linestring with a point index list 
     # point (x,y)s are initially stored in OrderedSets so we can give the same index to matching line endpoints; these OrderedSets are later converted to arrays
-    # We define them now so we can simultaneously define an enum for the corresponding point type that belongs in each
-    # FIXED points currently reflects simple-draped only though could be expanded to include 3d geometries in future
-
+    
     all_points_sets = [OrderedSet(),OrderedSet(),OrderedSet()]
-    ESTIMATED,FIXED,DECOUPLED = range(len(all_points_sets))
+    assert len(all_points_sets)==num_point_types
+    
+    # Point type model (controls behaviour of optimizer at each point)
 
-    # Feature and point type model (controls behaviour of optimizer at each point)
-
-    # at feature level, decoupled takes precedence over simpledraped as people are likely to apply simpledrapes to large flat areas and decouples to smaller features like bridges within them
-    def get_feature_type(decoupled,simpledraped):
-        if decoupled:
-            return DECOUPLED
-        elif simpledraped:
-            return FIXED
-        else:
-            return ESTIMATED
-
-    # conversely at point level, precedence order for endpoints (the only ones with potential conflict) is simpledraped, estimated, decoupled. We keep these in a dict to keep track of conflicts.
+    # in contrast to the feature type model above, precedence order for endpoints (the only ones with potential conflict) is fixed, estimated, decoupled. We keep these in a dict to keep track of conflicts
+    # n.b. if this precedence is ever changed, will need to change handling of fixed links during "inserting extra vertices" phase above
     point_to_type = {} 
     def set_point_type(coords,feature_type):
         if feature_type == FIXED:
@@ -233,25 +234,34 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
 
     print ("Building spatial model")
     # first pass through data to resolve point types
-    for geom,decoupled,simpledraped in zip(geometries,decoupled_geometries_mask,simpledraped_geometries_mask):
+    for geom,decoupled,fixed in zip(geometries,decoupled_geometries_mask,fix_geometries_mask):
         xs,ys = geom.coords.xy
-        feature_type = get_feature_type(decoupled,simpledraped)
+        feature_type = get_feature_type(decoupled,fixed)
         for x,y in zip(xs,ys):
             set_point_type((x,y),feature_type)
-    del decoupled_geometries_mask,simpledraped_geometries_mask
+    del decoupled_geometries_mask,fix_geometries_mask
+    
+    fixed_zs = {}
     
     # second pass through data to create point model
     point_indices_all_rows = []
     for geom in geometries:
         assert geom.geom_type=='LineString'
-        xs,ys = geom.coords.xy
         point_indices = []
-        for x,y in zip(xs,ys):
+        if geom.has_z:
+            coords = list(geom.coords)
+        else:
+            coords = [(x,y,0.) for (x,y) in geom.coords]
+        for x,y,z in coords:
             point_type = point_to_type[(x,y)]
             index = all_points_sets[point_type].add((x,y))
             point_indices.append((point_type,index))
+            if point_type==FIXED:
+                fixed_zs[index]=z
         point_indices_all_rows.append(point_indices)
 
+    fixed_zs = np_to_torch(np.array([fixed_zs[i] for i in range(len(all_points_sets[FIXED]))]))
+    
     num_estimated_points = len(all_points_sets[ESTIMATED])
     num_decoupled_points = len(all_points_sets[DECOUPLED])
     num_fixed_points = len(all_points_sets[FIXED])
@@ -502,11 +512,6 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     
     del gradient_test_distances
     all_points_arrays = [np_to_torch(a) for a in all_points_arrays]
-
-    if len(all_points_arrays[FIXED]):
-        fixed_zs = terrain_interpolator(all_points_arrays[FIXED])
-    else:
-        fixed_zs = torch.zeros(0,dtype=torch.double)
     
     def unpack_opt_params(opt_params):
         if not torch.is_tensor(opt_params): # may be the case if called from something other than the optimizer
@@ -673,17 +678,18 @@ def fit_model_from_command_line_options():
     op.add_option("--TERRAIN-INPUT",dest="terrainfile",help="[REQUIRED] Terrain model",metavar="FILE")
     op.add_option("--POLYLINE-INPUT",dest="shapefile",help="[REQUIRED] Polyline feature class e.g. network or GPS trace",metavar="FILE")
     op.add_option("--OUTPUT",dest="outfile",help="[REQUIRED] Output feature class",metavar="FILE")
-    op.add_option("--SLOPE-PRIOR-SCALE",dest="slope_prior_scale",help=f"Scale of exponential prior for path slope (equivalent to mean slope; defaults to {slope_prior_scale_default}; measured in degrees but prior is over grade)",metavar="ANGLE_IN_DEGREES",type="float")
+    op.add_option("--FIX-FIELD",dest="fixfield",help="Instead of estimating heights, preserve input z on features where FIELDNAME=true",metavar="FIELDNAME")
+    op.add_option("--DECOUPLE-FIELD",dest="decouplefield",help="Instead of estimating heights, decouple features from terrain where FIELDNAME=true (useful for bridges/tunnels)",metavar="FIELDNAME")
+    
     op.add_option("--SPATIAL-MISMATCH-PRIOR-SCALE",dest="mismatch_prior_scale",help="Standard deviation of zero-centred Gaussian prior for spatial mismatch (in spatial units of projection; defaults to half terrain raster cell size)",metavar="DISTANCE",type="float")
-    op.add_option("--SPATIAL-MISMATCH-MAX",dest="mismatch_max",help="Maximum permissible spatial mismatch (in spatial units of projection; defaults to maximum terrain tile dimension)",metavar="DISTANCE",type="float")
+    op.add_option("--SLOPE-PRIOR-SCALE",dest="slope_prior_scale",help=f"Scale of exponential prior for path slope (equivalent to mean slope; defaults to {slope_prior_scale_default}; measured in degrees but prior is over grade)",metavar="ANGLE_IN_DEGREES",type="float")
     op.add_option("--SLOPE-CONTINUITY-PRIOR-SCALE",dest="slope_continuity",help=f"Scale of normal (slope continuity) prior for path slope (equivalent to mean slope; defaults to {slope_continuity_scale_default}; measured in degrees but prior is over grade)",metavar="DEGREES",type="float")
     op.add_option("--PITCH-ANGLE-PRIOR-SCALE",dest="pitch_angle_scale",help=f"Pitch angle prior scale (defaults to {pitch_angle_scale_default})",metavar="ANGLE_IN_DEGREES",type="float")
-    op.add_option("--GPU",dest="cuda",action="store_true",help="Enable GPU acceleration")
-    op.add_option("--SIMPLE-DRAPE-FIELD",dest="simpledrapefield",help="Instead of estimating heights, perform ordinary drape of features over terrain where FIELDNAME=true",metavar="FIELDNAME")
-    op.add_option("--DECOUPLE-FIELD",dest="decouplefield",help="Instead of estimating heights, decouple features from terrain where FIELDNAME=true (useful for bridges/tunnels)",metavar="FIELDNAME")
+    op.add_option("--SPATIAL-MISMATCH-MAX",dest="mismatch_max",help="Maximum permissible spatial mismatch (in spatial units of projection; defaults to maximum terrain tile dimension)",metavar="DISTANCE",type="float")
     op.add_option("--MAXITER",dest="maxiter",help=f"Maximum number of optimizer iterations (defaults to {maxiter_default})",metavar="N",type="int",default=maxiter_default)
-    op.add_option("--IGNORE-PROJ-MISMATCH",dest="ignore_proj_mismatch",action="store_true",help="Ignore mismatched projections",default=False)
+    op.add_option("--GPU",dest="cuda",action="store_true",help="Enable GPU acceleration")
     op.add_option("--NUM-THREADS",dest="threads",help="Set number of threads for multiprocessing (defaults to number of available cores)",type="int",metavar="N")
+    op.add_option("--IGNORE-PROJ-MISMATCH",dest="ignore_proj_mismatch",action="store_true",help="Ignore mismatched projections",default=False)
     (options,args) = op.parse_args()
 
     if options.threads:
@@ -717,13 +723,13 @@ def fit_model_from_command_line_options():
     terrain_ys = (np.array(terrain_raster.y,np.float64))
     terrain_data = terrain_raster.data[0]
     
-    if options.simpledrapefield and options.decouplefield and np.logical_and(net_df[options.simpledrapefield],net_df[options.decouplefield]).any():
-        print ("Input contains rows which are both fixed/simple-draped and decoupled - decoupled takes precedence")
+    if options.fixfield and options.decouplefield and np.logical_and(net_df[options.fixfield],net_df[options.decouplefield]).any():
+        print ("Warning: Input contains features marked both as fixed and decoupled. These will be treated as decoupled.")
         
-    if options.simpledrapefield:
-        simpledrape_geometries_mask = net_df[options.simpledrapefield]
+    if options.fixfield:
+        fix_geometries_mask = net_df[options.fixfield]
     else:
-        simpledrape_geometries_mask = None
+        fix_geometries_mask = None
     if options.decouplefield:
         decouple_geometries_mask = net_df[options.decouplefield]
     else:
@@ -740,7 +746,7 @@ def fit_model_from_command_line_options():
                         mismatch_prior_scale = options.mismatch_prior_scale,
                         slope_continuity_scale = options.slope_continuity,
                         pitch_angle_scale = options.pitch_angle_scale,
-                        simpledraped_geometries_mask = simpledrape_geometries_mask,
+                        fix_geometries_mask = fix_geometries_mask,
                         decoupled_geometries_mask = decouple_geometries_mask,
                         use_cuda = options.cuda)
     
