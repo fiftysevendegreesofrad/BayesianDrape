@@ -13,7 +13,7 @@ Drape GPS traces and path networks over terrain using Bayesian maximum likelihoo
         
 3. Install the minimal environment needed to use BayesianDrape:
 
-        conda env create -f conda_env_configs/conda_env_minimal.yml
+        conda env create -f BayesianDrape/conda_env_configs/conda_env_minimal.yml
 
    (I also provide `conda_env_current.yml` which contains a working MPI + Jupyter version, but is not needed for basic use).
 
