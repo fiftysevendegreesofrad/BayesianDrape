@@ -459,7 +459,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     grade_exp_dist_lambda = exp_logpdf_param_from_scale(grade_scale)
     slope_continuity_param = normal_logpdf_param_from_scale(slope_continuity_grade_scale)
     
-    # Normalized grade_pdf used to give print some messages about physical interpretation to slope_continuity_grade_scale, though not used in main optimization
+    # Normalized grade_pdf used to give print some messages about physical interpretation of slope_continuity_grade_scale, though not used in main optimization
     def grade_pdf_normalized(slope_continuity_grade_scale,grade_scale,grade):
         if slope_continuity_grade_scale==np.inf:
             return grade_scale**-1*np.exp(-grade/grade_scale)
@@ -713,33 +713,25 @@ def fit_model_from_command_line_options():
     if not net_crs.equals(terr_crs,True):
         print(f"Coordinate reference systems:\n  Polyline CRS: {net_crs.name}\n  Terrain CRS:  {terr_crs.name}")
         if not options.ignore_proj_mismatch:
-            op.error(f"Coordinate reference systems of polylines and terrain do not appear to match. Reproject, fix CRS metadata or - if you think you know better - use --IGNORE-PROJ-MISMATCH at your peril.")
+            op.error("Coordinate reference systems of polylines and terrain do not appear to match. Reproject, fix CRS metadata or - if you think you know better - use --IGNORE-PROJ-MISMATCH at your peril.")
         else:
             print("Ignoring mismatched projections, don't say I didn't warn you!")
     else:
         print(f"Using {net_crs.name}")
     
-    terrain_xs = (np.array(terrain_raster.x,np.float64))
-    terrain_ys = (np.array(terrain_raster.y,np.float64))
+    terrain_xs = np.array(terrain_raster.x,np.float64)
+    terrain_ys = np.array(terrain_raster.y,np.float64)
     terrain_data = terrain_raster.data[0]
     
     if options.fixfield and options.decouplefield and np.logical_and(net_df[options.fixfield],net_df[options.decouplefield]).any():
         print ("Warning: Input contains features marked both as fixed and decoupled. These will be treated as decoupled.")
         
-    if options.fixfield:
-        fix_geometries_mask = net_df[options.fixfield]
-    else:
-        fix_geometries_mask = None
-    if options.decouplefield:
-        decouple_geometries_mask = net_df[options.decouplefield]
-    else:
-        decouple_geometries_mask = None
+    fix_geometries_mask = net_df[options.fixfield] if options.fixfield else None
+    decouple_geometries_mask = net_df[options.decouplefield] if options.decouplefield else None
         
     if not options.mismatch_max:
         options.mismatch_max = max(abs(terrain_xs[1]-terrain_xs[0]),abs(terrain_ys[1]-terrain_ys[0]))
         print (f"Maximum spatial mismatch set from larger terrain tile dimension: {options.mismatch_max:.2f}")
-        
-    # Build model
         
     model = build_model(terrain_xs,terrain_ys,terrain_data,net_df.geometry,
                         slope_prior_scale = options.slope_prior_scale,
