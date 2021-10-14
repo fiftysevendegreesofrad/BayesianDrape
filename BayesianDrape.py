@@ -694,9 +694,9 @@ def fit_model_from_command_line_options():
     op.add_option("--FIX-FIELD",dest="fixfield",help="Instead of estimating heights, preserve input z on features where FIELDNAME=true",metavar="FIELDNAME")
     op.add_option("--DECOUPLE-FIELD",dest="decouplefield",help="Instead of estimating heights, decouple features from terrain where FIELDNAME=true (useful for bridges/tunnels)",metavar="FIELDNAME")
     
-    op.add_option("--SPATIAL-MISMATCH-PRIOR-SCALE",dest="mismatch_prior_scale",help="Standard deviation of zero-centred Gaussian prior for spatial mismatch (in spatial units of projection; defaults to half terrain raster cell size)",metavar="DISTANCE",type="float")
+    op.add_option("--SPATIAL-MISMATCH-PRIOR-SCALE",dest="mismatch_prior_scale",help="Scale of zero-centred Gaussian prior for spatial mismatch (in spatial units of projection; defaults to half terrain raster cell size)",metavar="DISTANCE",type="float")
     op.add_option("--SLOPE-PRIOR-SCALE",dest="slope_prior_scale",help=f"Scale of exponential prior for path slope (equivalent to mean slope; defaults to {slope_prior_scale_default}; measured in degrees but prior is over grade)",metavar="ANGLE_IN_DEGREES",type="float")
-    op.add_option("--SLOPE-CONTINUITY-PRIOR-SCALE",dest="slope_continuity",help=f"Scale of normal (slope continuity) prior for path slope (equivalent to mean slope; defaults to {slope_continuity_scale_default}; measured in degrees but prior is over grade)",metavar="DEGREES",type="float")
+    op.add_option("--SLOPE-CONTINUITY-PRIOR-SCALE",dest="slope_continuity",help=f"Scale of Gaussian (slope continuity) prior for path slope (equivalent to mean slope; defaults to {slope_continuity_scale_default}; measured in degrees but prior is over grade)",metavar="ANGLE_IN_DEGREES",type="float")
     op.add_option("--PITCH-ANGLE-PRIOR-SCALE",dest="pitch_angle_scale",help=f"Pitch angle prior scale (defaults to {pitch_angle_scale_default})",metavar="ANGLE_IN_DEGREES",type="float")
     op.add_option("--SPATIAL-MISMATCH-MAX",dest="mismatch_max",help="Maximum permissible spatial mismatch (in spatial units of projection; defaults to maximum terrain tile dimension)",metavar="DISTANCE",type="float")
     op.add_option("--MAXITER",dest="maxiter",help=f"Maximum number of optimizer iterations (defaults to {maxiter_default})",metavar="N",type="int",default=maxiter_default)
