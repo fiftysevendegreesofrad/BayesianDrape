@@ -1,6 +1,8 @@
 # BayesianDrape
 Drape GPS traces and path networks over terrain using Bayesian maximum likelihood estimation
 
+![image](https://user-images.githubusercontent.com/12543309/137376777-69e42b05-269a-4144-8bf0-16fcf1cd355c.png)
+
 ## Setup
 
 1. [Install Anaconda](https://docs.anaconda.com/anaconda/install/index.html) if you don't already have it.
