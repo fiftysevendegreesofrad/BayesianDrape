@@ -10,7 +10,7 @@ from scipy.optimize import minimize,Bounds
 from scipy.special import erfc
 import scipy.sparse
 from scipy.sparse import lil_matrix,coo_matrix
-from torch_interpolations import RegularGridInterpolator
+from terrain_interpolator import TerrainInterpolator
 import numpy as np
 from ordered_set import OrderedSet
 from itertools import tee,combinations,groupby
@@ -167,7 +167,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     terrain_min_height = float(terrain_data.min())
     terrain_max_height = float(terrain_data.max())
     print_callback(f"Terrain height range from {terrain_min_height:.2f} to {terrain_max_height:.2f}")
-    terrain_interpolator_not_pytorch = RegularGridInterpolator((terrain_xs,terrain_ys), terrain_data)
+    terrain_interpolator_internal = TerrainInterpolator(terrain_xs,terrain_ys, terrain_data)
     del terrain_data
     
     def terrain_interpolator(points_to_interpolate):
@@ -175,7 +175,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         # swapping dimensions on our definition of points throughout, and ensuring all tensors are created contiguous, gives maybe 10% speed boost - reverting for now as that's premature
         if not torch.is_tensor(points_to_interpolate):
             points_to_interpolate = np_to_torch(points_to_interpolate)
-        return terrain_interpolator_not_pytorch([points_to_interpolate[:,0].contiguous(),points_to_interpolate[:,1].contiguous()])
+        return terrain_interpolator_internal.forward(points_to_interpolate[:,0].contiguous(),points_to_interpolate[:,1].contiguous())    
 
     # Feature type model: decoupled takes precedence over fixed as people are likely to fix large flat areas and decouples to smaller features like bridges within them
     num_point_types = 3

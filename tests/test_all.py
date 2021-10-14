@@ -59,10 +59,10 @@ def lltest(net_file,original_lls,original_gradient,times=False):
 
         
 def test_log_likelihood_small():
-    lltest("data/test_awkward_link.shp",[1510.445993729818, 2158.1575271056854, 2893.212480634359, 3610.7733181410676, 4282.488351291478],[10.77271613,  2.46512369])
+    lltest("data/test_awkward_link.shp",[1510.4459937298175, 2158.157527105684, 2893.2124806343572, 3610.773318141067, 4282.4883512914785],[10.77271613,  2.46512369])
 
 def test_log_likelihood_large():
-    lltest("data/biggertest.shp",[45557.208021362145, 69209.13185062728, 98373.28361210061, 126995.76480611479, 154641.1557063365],[-0.42851993,  0.03308218])
+    lltest("data/biggertest.shp",[45557.20802136228, 69209.13185062712, 98373.28361210058, 126995.76480611488, 154641.15570633655],[-0.42851993,  0.03308218])
 
 def test_autodiff_cell_boundary():
     '''Ensure there is still a gradient on boundaries of raster cells'''
