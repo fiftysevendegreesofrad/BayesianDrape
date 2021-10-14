@@ -2,7 +2,9 @@
 
 """
 ***************************************************************************
-*   Copyright Crispin Cooper 2021                                         *
+By Crispin Cooper
+Copyright Cardiff University 2021                                         
+Licensed under GNU Affero v3
 ***************************************************************************
 """
 
