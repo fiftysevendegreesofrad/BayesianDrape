@@ -28,7 +28,7 @@ def lltest(net_file,original_lls,original_gradient,times=False):
     cont_scale = np.arctan(0.42)/np.pi*180
     pitch_prior = 1.3
     model = BayesianDrape.build_model(terrain_xs,terrain_ys,terrain_data,net_df.geometry,slope_prior_scale=slope_prior,slope_continuity_scale=cont_scale,
-                pitch_angle_scale=pitch_prior)
+                pitch_angle_scale=pitch_prior,use_cuda=False)
     
     num_estimated_points = int(model.initial_guess.shape[0]/2)
     print (f"{num_estimated_points=}")

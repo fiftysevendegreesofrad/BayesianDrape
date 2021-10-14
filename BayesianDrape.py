@@ -110,14 +110,24 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
                 use_cuda=False,
                 print_callback=print):
 
+
     if use_cuda:
         torch.set_default_tensor_type(torch.cuda.DoubleTensor)
+        device = torch.device("cuda")
         def np_to_torch(x):
-            return torch.from_numpy(x).cuda()
+            if torch.is_tensor(x):
+                assert x.is_cuda
+                return x
+            else:
+                return torch.from_numpy(x).cuda()
     else:
+        device = torch.device("cpu")
         def np_to_torch(x):
-            return torch.from_numpy(x)
-            
+            if torch.is_tensor(x):
+                return x
+            else:
+                return torch.from_numpy(x)
+
     # computed parameter defaults
     if fix_geometries_mask is None:
         fix_geometries_mask = [0]*len(geometries)
@@ -155,15 +165,15 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     # change from yx to xy ordering
     terrain_zs = terrain_zs.T
     
-    terrain_xs = np_to_torch(terrain_index_xs.copy())
-    terrain_ys = np_to_torch(terrain_index_ys.copy())
-    
     def regularly_spaced(x):
         xd = np.diff(x)
         return np.all(np.abs(xd-xd[0])<xd[0]/100000)
         
-    assert regularly_spaced(terrain_xs)
-    assert regularly_spaced(terrain_ys)
+    assert regularly_spaced(terrain_index_xs)
+    assert regularly_spaced(terrain_index_ys)
+    
+    terrain_xs = np_to_torch(terrain_index_xs.copy())
+    terrain_ys = np_to_torch(terrain_index_ys.copy())
     
     terrain_data = np_to_torch(terrain_zs.copy())
     terrain_min_height = float(terrain_data.min())
@@ -489,7 +499,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     else:
         # allows setting mismatch_prior_scale==0 to get ordinary drape
         def squareoffset_logpdf(x):
-            res = torch.zeros(x.shape)
+            res = torch.zeros(x.shape,device=device)
             res[x!=0]=-np.inf
             return res
         
@@ -516,18 +526,17 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     all_points_arrays = [np_to_torch(a) for a in all_points_arrays]
     
     def unpack_opt_params(opt_params):
-        if not torch.is_tensor(opt_params): # may be the case if called from something other than the optimizer
-            opt_params = np_to_torch(opt_params)
+        opt_params = np_to_torch(opt_params)
         assert len(opt_params)==2*num_estimated_points+num_decoupled_points
         point_offsets = torch.reshape(opt_params[0:num_estimated_points*2],all_points_arrays[ESTIMATED].shape)
         decoupled_zs = opt_params[num_estimated_points*2:]
         return point_offsets,decoupled_zs
         
     def init_opt_params():
-        point_offsets = np_to_torch(np.zeros((num_estimated_points*2),float))
-        decoupled_zs = np_to_torch(init_guess_decoupled_zs())
-        return torch.cat((point_offsets,decoupled_zs))
-        
+        point_offsets = np.zeros((num_estimated_points*2),float)
+        decoupled_zs = init_guess_decoupled_zs()
+        return np.concatenate((point_offsets,decoupled_zs),axis=None)
+
     def pack_optim_bounds(max_offset_dist):
         offset_bounds_lower = np.zeros(num_estimated_points*2)-max_offset_dist
         offset_bounds_upper = np.zeros(num_estimated_points*2)+max_offset_dist
@@ -553,8 +562,8 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         
         estimated_zs = terrain_interpolator(all_points_arrays[ESTIMATED] + point_offsets)
         
-        z1s = torch.zeros(num_gradient_tests,dtype=torch.double)
-        z2s = torch.zeros(num_gradient_tests,dtype=torch.double)
+        z1s = torch.zeros(num_gradient_tests,dtype=torch.double,device=device)
+        z2s = torch.zeros(num_gradient_tests,dtype=torch.double,device=device)
         z1s[z1s_mask_fixed] = fixed_zs[fixed_zs_p1_indices] 
         z2s[z2s_mask_fixed] = fixed_zs[fixed_zs_p2_indices]
         z1s[z1s_mask_est] = estimated_zs[est_zs_p1_indices]
@@ -589,12 +598,14 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         n,o,c = likelihood_breakdown(opt_params)
         return -(n+o+c)
 
+    def mll_cpu(opt_params):
+        return minus_log_likelihood(opt_params).cpu()
+
     def minus_log_likelihood_gradient(opt_params):
-        if not torch.is_tensor(opt_params):
-            opt_params = np_to_torch(opt_params)
+        opt_params = np_to_torch(opt_params)
         opt_params.requires_grad = True
         minus_log_likelihood(opt_params).backward() 
-        return opt_params.grad
+        return opt_params.grad.cpu()
         
     def reconstruct_geometries(opt_results):
         final_offsets,final_decoupled_zs = unpack_opt_params(opt_results)
@@ -624,7 +635,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     
     return_dict = dict(grade_logpdf=grade_logpdf,
                   squareoffset_logpdf=squareoffset_logpdf,
-                  minus_log_likelihood=lambda x: float(minus_log_likelihood(x)),
+                  minus_log_likelihood=lambda x: float(mll_cpu(x)),
                   minus_log_likelihood_gradient=minus_log_likelihood_gradient,
                   likelihood_report=likelihood_report,
                   initial_guess=init_opt_params(),
