@@ -20,11 +20,15 @@ def np_to_torch(x):
 def lltest(net_file,original_lls,original_gradient,times=False):
     net_df = gp.read_file(net_file)
     terrain_raster = rioxarray.open_rasterio("data/all_os50_terrain.tif")
-    terrain_xs = (np.array(terrain_raster.x,np.float64))
-    terrain_ys = (np.flip(np.array(terrain_raster.y,np.float64)) )
-    terrain_data = (np.flip(terrain_raster.data[0],axis=0).T)
+    terrain_xs = np.array(terrain_raster.x,np.float64)
+    terrain_ys = np.array(terrain_raster.y,np.float64) 
+    terrain_data = terrain_raster.data[0]
     
-    model = BayesianDrape.build_model(terrain_xs,terrain_ys,terrain_data,net_df.geometry)
+    slope_prior = 2.2
+    cont_scale = np.arctan(0.42)/np.pi*180
+    pitch_prior = 1.3
+    model = BayesianDrape.build_model(terrain_xs,terrain_ys,terrain_data,net_df.geometry,slope_prior_scale=slope_prior,slope_continuity_scale=cont_scale,
+                pitch_angle_scale=pitch_prior)
     
     num_estimated_points = int(model.initial_guess.shape[0]/2)
     print (f"{num_estimated_points=}")
@@ -55,10 +59,10 @@ def lltest(net_file,original_lls,original_gradient,times=False):
 
         
 def test_log_likelihood_small():
-    lltest("data/test_awkward_link.shp",[680.192947025223, 680.4777291420818, 737.0745926244945, 833.148016849311, 955.2640711942598],[0.83615318,0.19133717])
+    lltest("data/test_awkward_link.shp",[1510.445993729818, 2158.1575271056854, 2893.212480634359, 3610.7733181410676, 4282.488351291478],[10.77271613,  2.46512369])
 
 def test_log_likelihood_large():
-    lltest("data/biggertest.shp",[25570.221193171794, 26236.077909753058, 27929.089912274794, 30338.01634808881, 33324.13862614907],[-0.1377182,   0.01063199])
+    lltest("data/biggertest.shp",[45557.208021362145, 69209.13185062728, 98373.28361210061, 126995.76480611479, 154641.1557063365],[-0.42851993,  0.03308218])
 
 def test_autodiff_cell_boundary():
     '''Ensure there is still a gradient on boundaries of raster cells'''
