@@ -21,11 +21,11 @@ dependencies:
   - boost-cpp=1.74.0=h312852a_4
   - bzip2=1.0.8=h7f98852_4
   - c-ares=1.17.1=h7f98852_1
-  - ca-certificates=2021.5.30=ha878542_0
+  - ca-certificates=2021.9.30=h06a4308_1
   - cached-property=1.5.2=hd8ed1ab_1
   - cached_property=1.5.2=pyha770c72_1
   - cairo=1.16.0=h6cf1ce9_1008
-  - certifi=2021.5.30=py39hf3d152e_0
+  - certifi=2021.10.8=py39h06a4308_0
   - cffi=1.14.5=py39he32792d_0
   - cfitsio=3.470=hb418390_7
   - cftime=1.5.0=py39hce5d2b2_0
@@ -58,6 +58,7 @@ dependencies:
   - hdf5=1.10.6=nompi_h6a2412b_1114
   - icu=68.1=h58526e2_0
   - importlib-metadata=4.6.1=py39hf3d152e_0
+  - iniconfig=1.1.1=pyhd3eb1b0_0
   - ipykernel=6.0.1=py39hef51801_0
   - ipython=7.25.0=py39hef51801_1
   - ipython_genutils=0.2.0=py_1
@@ -121,6 +122,7 @@ dependencies:
   - mkl=2021.3.0=h726a3e6_557
   - mkl-devel=2021.3.0=ha770c72_558
   - mkl-include=2021.3.0=h726a3e6_557
+  - more-itertools=8.8.0=pyhd3eb1b0_0
   - mpi=1.0=mpich
   - mpi4py=3.1.1=py39h6438238_0
   - mpich=3.4.2=h846660c_100
@@ -139,19 +141,21 @@ dependencies:
   - numpy=1.21.0=py39hdbf815f_0
   - olefile=0.46=pyh9f0ad1d_1
   - openjpeg=2.4.0=hb52868f_1
-  - openssl=1.1.1l=h7f98852_0
+  - openssl=1.1.1l=h7f8727e_0
   - ordered-set=4.0.2=py_0
   - packaging=21.0=pyhd8ed1ab_0
   - pandas=1.3.0=py39hde0f152_0
   - pandoc=2.14.0.3=h7f98852_0
   - pandocfilters=1.4.2=py_1
   - parso=0.8.2=pyhd8ed1ab_0
+  - patsy=0.5.1=py_0
   - pcre=8.45=h9c3ff4c_0
   - pexpect=4.8.0=pyh9f0ad1d_2
   - pickleshare=0.7.5=py_1003
   - pillow=8.3.0=py39ha612740_0
   - pip=21.1.3=pyhd8ed1ab_0
   - pixman=0.40.0=h36c2ea0_0
+  - pluggy=0.13.1=py39h06a4308_0
   - poppler=21.03.0=h93df280_0
   - poppler-data=0.4.10=0
   - postgresql=13.3=h2510834_0
@@ -160,11 +164,13 @@ dependencies:
   - prompt-toolkit=3.0.19=pyha770c72_0
   - pthread-stubs=0.4=h36c2ea0_1001
   - ptyprocess=0.7.0=pyhd3deb0d_0
+  - py=1.10.0=pyhd3eb1b0_0
   - pycparser=2.20=pyh9f0ad1d_2
   - pygments=2.9.0=pyhd8ed1ab_0
   - pyparsing=2.4.7=pyh9f0ad1d_0
   - pyproj=3.1.0=py39ha9a7ae0_3
   - pyrsistent=0.17.3=py39h3811e60_2
+  - pytest=6.2.4=py39h06a4308_2
   - python=3.9.2=hffdb5ce_0_cpython
   - python-dateutil=2.8.1=py_0
   - python_abi=3.9=2_cp39
@@ -178,18 +184,22 @@ dependencies:
   - schwimmbad=0.3.2=py39hf3d152e_0
   - scikit-learn=0.24.2=py39h4dfa638_0
   - scipy=1.7.0=py39hee8e79c_0
+  - seaborn=0.11.2=hd8ed1ab_0
+  - seaborn-base=0.11.2=pyhd8ed1ab_0
   - send2trash=1.7.1=pyhd8ed1ab_0
   - setuptools=49.6.0=py39hf3d152e_3
   - shapely=1.7.1=py39ha61afbd_5
   - six=1.16.0=pyh6c4a22f_0
   - snuggs=1.4.7=py_0
   - sqlite=3.36.0=h9cd32fc_0
+  - statsmodels=0.12.2=py39hce5d2b2_0
   - tbb=2021.3.0=h4bd325d_0
   - terminado=0.10.1=py39hf3d152e_0
   - testpath=0.5.0=pyhd8ed1ab_0
   - threadpoolctl=2.1.0=pyh5ca1d4c_0
   - tiledb=2.3.1=he87e0bf_0
   - tk=8.6.10=h21135ba_1
+  - toml=0.10.2=pyhd3eb1b0_0
   - tornado=6.1=py39h3811e60_1
   - tqdm=4.61.1=pyhd8ed1ab_0
   - traitlets=5.0.5=py_0

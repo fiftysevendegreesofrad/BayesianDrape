@@ -1,6 +1,7 @@
-name: bayesiandrape_nb_mpi
+name: bayesiandrape
 channels:
   - pytorch
+  - nvidia
   - conda-forge
 dependencies:
   - python=3.9.2
@@ -8,11 +9,7 @@ dependencies:
   - ordered-set
   - rioxarray
   - shapely
-  - emcee
-  - corner
   - scipy
   - pytorch
-  - nb_conda
-  - ucx
-  - mpich
-
+  - cudatoolkit=11.1
+  - pytest
