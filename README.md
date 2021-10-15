@@ -21,6 +21,7 @@ Drape GPS traces and path networks over terrain using Bayesian maximum likelihoo
 
 A minimal example: 
 
+    conda activate bayesiandrape
     cd BayesianDrape
     python BayesianDrape.py --TERRAIN-INPUT data/all_os50_terrain.tif --POLYLINE-INPUT data/test_awkward_link.shp --OUTPUT testout.shp 
 
