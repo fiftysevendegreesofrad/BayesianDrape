@@ -73,4 +73,26 @@ For more options:
 
 ## Use as a library
 
-You can `import BayesianDrape` into your own code. For the definitive usage example, look at the bottom of `BayesianDrape.py` to see what it does with itself if called from the command line.
+You can `import BayesianDrape` into your own code. 
+
+    import BayesianDrape
+    import geopandas as gp
+    import numpy as np
+    import rioxarray
+
+    # Read network with geopandas - alternatively just create your own list of shapely geometries
+    net_df = gp.read_file("my_network_polylines.shp")
+    shapely_geometries = net_df.geometry
+
+    # Read terrain with rioxarray - alternatively create your own 1-d numpy arrays for x/y coordinates, and a 2-d array of z values
+    terrain_raster = rioxarray.open_rasterio("my_terrain.tif")
+    terrain_xs = np.array(terrain_raster.x,np.float64)
+    terrain_ys = np.array(terrain_raster.y,np.float64)
+    terrain_data = terrain_raster.data[0]
+        
+    # Build and fit model
+    model = BayesianDrape.build_model(terrain_xs,terrain_ys,terrain_data,shapely_geometries)
+    max_iterations = 10000
+    draped_shapely_geometries = BayesianDrape.fit_model(model,max_iterations)
+    
+Further arguments to `build_model()` allow for changing priors, fixed and decoupled points, etc. For the definitive usage example, look at the bottom of `BayesianDrape.py` to see what it does if called from the command line.
