@@ -11,7 +11,7 @@ Licensed under GNU Affero v3
 from scipy.optimize import minimize,Bounds
 from scipy.special import erfc
 import scipy.sparse
-from scipy.sparse import lil_matrix,coo_matrix
+from scipy.sparse import lil_matrix
 from terrain_interpolator import TerrainInterpolator
 import numpy as np
 from ordered_set import OrderedSet
@@ -585,7 +585,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
             pitch_angle_likelihood = pitch_angle_logpdf(pitch_angles).sum() 
         
         # Log likelihood of point offsets
-        offset_square_distances = ((point_offsets**2).sum(axis=1))
+        offset_square_distances = (point_offsets**2).sum(axis=1)
         offset_likelihood = squareoffset_logpdf(offset_square_distances).sum()
         
         return neighbour_likelihood,offset_likelihood,pitch_angle_likelihood
@@ -617,8 +617,6 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         mean_offset_dist = float(offset_distances.mean())
         max_offset_dist = float(offset_distances.max())
         print_callback (f"Offset distance mean={mean_offset_dist:.2f}, max={max_offset_dist:.2f}")
-
-        # Interpolate decoupled points: iterate through decoupled_group_boundary_points, as they are likely fewer in number than the decoupled points themselves
 
         def get_point_output(index_tuple):
             pt_type,pt_index = index_tuple
