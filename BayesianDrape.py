@@ -201,7 +201,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
             return ESTIMATED
 
     # Add points on lines wherever they cross terrain model grid cells 
-    print ("Inserting extra vertices on polylines to interpolate terrain")
+    print_callback ("Inserting extra vertices on polylines to interpolate terrain")
     xmin = terrain_xs.min()
     xmax = terrain_xs.max()
     ymin = terrain_ys.min()
@@ -220,7 +220,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         if not use_input_z:
             inserted_vertex_count += insert_points_on_gridlines(geom,gridlines,new_vertex_tolerance) # to ensure every terrain point is interpolated
     del gridlines
-    print (f"  ({inserted_vertex_count} extra vertices added)")
+    print_callback (f"  ({inserted_vertex_count} extra vertices added)")
     
     # Build point model: we represent each linestring with a point index list 
     # point (x,y)s are initially stored in OrderedSets so we can give the same index to matching line endpoints; these OrderedSets are later converted to arrays
@@ -244,7 +244,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
                 point_to_type[coords] = DECOUPLED
         else: assert False    
 
-    print ("Building spatial model")
+    print_callback ("Building spatial model")
     # first pass through data to resolve point types
     for geom,decoupled,fixed in zip(geometries,decoupled_geometries_mask,fix_geometries_mask):
         xs,ys = geom.coords.xy
@@ -650,7 +650,7 @@ def fit_model(model,maxiter,max_offset_dist=np.inf,print_callback=print,reportit
     last_time = time.perf_counter()
     callback_count = 0
     
-    last_params = None
+    last_params = model.initial_guess
     second_params = None
     penultimate_params = None
     
