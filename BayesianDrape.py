@@ -644,17 +644,24 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     BayesianDrapeModel = namedtuple("BayesianDrapeModel",return_dict)
     return BayesianDrapeModel(**return_dict)
     
-def fit_model(model,maxiter,max_offset_dist=np.inf,print_callback=print):
+def fit_model(model,maxiter,max_offset_dist=np.inf,print_callback=print,reportiter=5):
     initial_log_likelihood,initial_lik_report = model.likelihood_report(model.initial_guess)
     last_ll = initial_log_likelihood
     last_time = time.perf_counter()
     callback_count = 0
-    reportiter = 5
+    
+    last_params = None
+    second_params = None
+    penultimate_params = None
     
     def callback(x):
-        nonlocal last_ll,last_time,callback_count
+        nonlocal last_ll,last_time,callback_count,last_params,penultimate_params,second_params
+        penultimate_params = last_params
+        last_params = x.copy()
+        if callback_count==0:
+            second_params = x.copy()
         callback_count += 1
-        if callback_count%reportiter==0:
+        if reportiter>0 and callback_count%reportiter==0:
             ll = float(-model.minus_log_likelihood(x))
             lldiff = abs(ll-last_ll)
             last_ll = ll
@@ -672,6 +679,15 @@ def fit_model(model,maxiter,max_offset_dist=np.inf,print_callback=print):
     optimizer_results = result["x"]
     end_log_likelihood,end_lik_report = model.likelihood_report(optimizer_results)
     print_callback (f"Final optimizer log likelihood after {callback_count} iterations = {end_log_likelihood:.1f}\n{end_lik_report}")
+    
+    second_ll = float(-model.minus_log_likelihood(second_params))
+    penultimate_ll = float(-model.minus_log_likelihood(penultimate_params))
+    print_callback(f"First step change in log likelihood: {second_ll-initial_log_likelihood}")
+    print_callback(f"First step mean change in param: {abs(model.initial_guess-second_params).mean()}")
+    print_callback(f"Final step change in log likelihood: {end_log_likelihood-penultimate_ll}")
+    print_callback(f"Final step mean change in param: {abs(penultimate_params-optimizer_results).mean()}")
+    print_callback(f"Total change in log likelihood: {end_log_likelihood-initial_log_likelihood}")
+    print_callback(f"Total mean change in param: {abs(model.initial_guess-optimizer_results).mean()}")
     
     print_callback ("Reconstructing geometries")
     return [LineString(geom) for geom in model.reconstruct_geometries_from_optimizer_results(optimizer_results)]
@@ -701,6 +717,8 @@ def fit_model_from_command_line_options():
     op.add_option("--GPU",dest="cuda",action="store_true",help="Enable GPU acceleration")
     op.add_option("--NUM-THREADS",dest="threads",help="Set number of threads for multiprocessing (defaults to number of available cores)",type="int",metavar="N")
     op.add_option("--IGNORE-PROJ-MISMATCH",dest="ignore_proj_mismatch",action="store_true",help="Ignore mismatched projections",default=False)
+    op.add_option("--ITERATION-REPORT-EVERY",dest="reportiter",help="Report log likelihood every N iterations (set to 0 for never)",type="int",metavar="N",default=5)
+    
     (options,args) = op.parse_args()
 
     if options.threads:
@@ -755,7 +773,7 @@ def fit_model_from_command_line_options():
     
     del terrain_xs,terrain_ys,terrain_data,terrain_raster
     
-    net_df.geometry = fit_model(model,options.maxiter,options.mismatch_max)
+    net_df.geometry = fit_model(model,options.maxiter,options.mismatch_max,reportiter=options.maxiter)
 
     print (f"Writing output to {options.outfile}") 
     net_df.to_file(options.outfile)
