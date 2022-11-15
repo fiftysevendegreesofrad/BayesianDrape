@@ -651,8 +651,8 @@ def fit_model(model,maxiter,max_offset_dist=np.inf,print_callback=print,reportit
     callback_count = 0
     
     last_params = model.initial_guess
-    second_params = None
-    penultimate_params = None
+    second_params = model.initial_guess
+    penultimate_params = model.initial_guess
     
     def callback(x):
         nonlocal last_ll,last_time,callback_count,last_params,penultimate_params,second_params
