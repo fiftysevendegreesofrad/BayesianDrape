@@ -23,7 +23,11 @@ A minimal example:
 
     conda activate bayesiandrape
     cd BayesianDrape
-    python BayesianDrape.py --TERRAIN-INPUT data/all_os50_terrain.tif --POLYLINE-INPUT data/test_awkward_link.shp --OUTPUT testout.shp 
+    python BayesianDrape.py --TERRAIN-INPUT data/all_os50_terrain.tif --POLYLINE-INPUT data/test_awkward_link.shp --OUTPUT bayes_drape_output.shp 
+
+You can create a naive drape for comparison by setting the spatial mismatch prior scale to zero:
+
+    python BayesianDrape.py --TERRAIN-INPUT data/all_os50_terrain.tif --POLYLINE-INPUT data/test_awkward_link.shp --OUTPUT naive_drape_output.shp --SPATIAL-MISMATCH-PRIOR-SCALE=0
 
 BayesianDrape is tested on `.tiff` and `.shp` files, but should be able to use any raster supported by [rioxarray](https://corteva.github.io/rioxarray/stable/) and any vector supported by [Geopandas](https://geopandas.org/).
 
