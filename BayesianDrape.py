@@ -644,7 +644,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     BayesianDrapeModel = namedtuple("BayesianDrapeModel",return_dict)
     return BayesianDrapeModel(**return_dict)
     
-def fit_model(model,maxiter,max_offset_dist=np.inf,print_callback=print,reportiter=5):
+def fit_model(model,maxiter,max_offset_dist=np.inf,print_callback=print,reportiter=5,differentiate=True):
     initial_log_likelihood,initial_lik_report = model.likelihood_report(model.initial_guess)
     last_ll = initial_log_likelihood
     last_time = time.perf_counter()
@@ -672,8 +672,9 @@ def fit_model(model,maxiter,max_offset_dist=np.inf,print_callback=print,reportit
             print_callback (text+"\r",end="")
     
     lower_bounds,upper_bounds = model.optim_bounds(max_offset_dist)
+    jac = model.minus_log_likelihood_gradient if differentiate else None
     print_callback (f"Starting optimizer log likelihood = {initial_log_likelihood:.1f}\n{initial_lik_report}")
-    result = minimize(model.minus_log_likelihood,model.initial_guess,callback = callback,bounds=Bounds(lower_bounds,upper_bounds),jac=model.minus_log_likelihood_gradient,options=dict(maxiter=maxiter)) 
+    result = minimize(model.minus_log_likelihood,model.initial_guess,callback = callback,bounds=Bounds(lower_bounds,upper_bounds),jac=jac,options=dict(maxiter=maxiter)) 
     print_callback (f"\nOptimizer terminated with status: {result['message']}")
     
     optimizer_results = result["x"]
@@ -718,6 +719,7 @@ def fit_model_from_command_line_options():
     op.add_option("--NUM-THREADS",dest="threads",help="Set number of threads for multiprocessing (defaults to number of available cores)",type="int",metavar="N")
     op.add_option("--IGNORE-PROJ-MISMATCH",dest="ignore_proj_mismatch",action="store_true",help="Ignore mismatched projections",default=False)
     op.add_option("--ITERATION-REPORT-EVERY",dest="reportiter",help="Report log likelihood every N iterations (set to 0 for never)",type="int",metavar="N",default=5)
+    op.add_option("--DISABLE-AUTODIFF",dest="disable_autodiff",action="store_true",help="Disable automatic differentiation (slow!)",default=False)
     
     (options,args) = op.parse_args()
 
@@ -773,7 +775,8 @@ def fit_model_from_command_line_options():
     
     del terrain_xs,terrain_ys,terrain_data,terrain_raster
     
-    net_df.geometry = fit_model(model,options.maxiter,options.mismatch_max,reportiter=options.maxiter)
+    net_df.geometry = fit_model(model,options.maxiter,options.mismatch_max,
+                                reportiter=options.maxiter,differentiate=(not options.disable_autodiff))
 
     print (f"Writing output to {options.outfile}") 
     net_df.to_file(options.outfile)
