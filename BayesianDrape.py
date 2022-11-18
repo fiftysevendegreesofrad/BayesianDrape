@@ -646,6 +646,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     
 def fit_model(model,maxiter,max_offset_dist=np.inf,print_callback=print,reportiter=5,differentiate=True):
     initial_log_likelihood,initial_lik_report = model.likelihood_report(model.initial_guess)
+    print_callback(f"Num params: {model.initial_guess.shape[0]}")
     last_ll = initial_log_likelihood
     last_time = time.perf_counter()
     callback_count = 0
@@ -674,9 +675,13 @@ def fit_model(model,maxiter,max_offset_dist=np.inf,print_callback=print,reportit
     lower_bounds,upper_bounds = model.optim_bounds(max_offset_dist)
     jac = model.minus_log_likelihood_gradient if differentiate else None
     print_callback (f"Starting optimizer log likelihood = {initial_log_likelihood:.1f}\n{initial_lik_report}")
+    init_time = time.perf_counter()
     result = minimize(model.minus_log_likelihood,model.initial_guess,callback = callback,bounds=Bounds(lower_bounds,upper_bounds),jac=jac,options=dict(maxiter=maxiter)) 
-    print_callback (f"\nOptimizer terminated with status: {result['message']}")
+    end_time = time.perf_counter()
+    t_secs = end_time - init_time
     
+    print_callback (f"\nOptimizer terminated with status: {result['message']}")
+    print_callback (f"Total time: {t_secs:.3g} seconds")
     optimizer_results = result["x"]
     end_log_likelihood,end_lik_report = model.likelihood_report(optimizer_results)
     print_callback (f"Final optimizer log likelihood after {callback_count} iterations = {end_log_likelihood:.1f}\n{end_lik_report}")
