@@ -676,7 +676,7 @@ def fit_model(model,maxiter,max_offset_dist=np.inf,print_callback=print,reportit
     jac = model.minus_log_likelihood_gradient if differentiate else None
     print_callback (f"Starting optimizer log likelihood = {initial_log_likelihood:.1f}\n{initial_lik_report}")
     init_time = time.perf_counter()
-    result = minimize(model.minus_log_likelihood,model.initial_guess,callback = callback,bounds=Bounds(lower_bounds,upper_bounds),jac=jac,options=dict(maxiter=maxiter)) 
+    result = minimize(model.minus_log_likelihood,model.initial_guess,callback = callback,bounds=Bounds(lower_bounds,upper_bounds),jac=jac,options=dict(maxiter=maxiter,maxfun=maxiter*20)) 
     end_time = time.perf_counter()
     t_secs = end_time - init_time
     
@@ -705,7 +705,7 @@ def fit_model_from_command_line_options():
     import geopandas as gp
     from pyproj.crs import CRS
     
-    maxiter_default = 10000
+    maxiter_default = 20000
     
     op = OptionParser()
     op.add_option("--TERRAIN-INPUT",dest="terrainfile",help="[REQUIRED] Terrain model",metavar="FILE")
