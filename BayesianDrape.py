@@ -142,6 +142,9 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     if mismatch_prior_scale is None:
         mismatch_prior_scale = max(cellsizex,cellsizey)/2
     
+    if mismatch_prior_scale==0:
+        gradient_smooth_window=0
+    
     # constant parameter defaults 
     # (can't use default arguments as we want to support caller passing None)
     if slope_prior_scale is None:
