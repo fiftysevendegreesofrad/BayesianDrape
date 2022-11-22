@@ -106,6 +106,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
                 geometries,
                 slope_prior_scale=slope_prior_scale_default,mismatch_prior_scale=None,slope_continuity_scale=None,
                 pitch_angle_scale=None,
+                gradient_smooth_window=0,
                 fix_geometries_mask=None,decoupled_geometries_mask=None,
                 use_cuda=False,
                 print_callback=print):
@@ -187,7 +188,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         # swapping dimensions on our definition of points throughout, and ensuring all tensors are created contiguous, gives maybe 10% speed boost - reverting for now as that's premature
         if not torch.is_tensor(points_to_interpolate):
             points_to_interpolate = np_to_torch(points_to_interpolate)
-        return terrain_interpolator_internal.forward(points_to_interpolate[:,0].contiguous(),points_to_interpolate[:,1].contiguous())    
+        return terrain_interpolator_internal.forward(points_to_interpolate[:,0].contiguous(),points_to_interpolate[:,1].contiguous(),gradient_smooth_window)    
 
     # Feature type model: decoupled takes precedence over fixed as people are likely to fix large flat areas and decouples to smaller features like bridges within them
     num_point_types = 3
@@ -780,7 +781,7 @@ def fit_model_from_command_line_options():
     
     del terrain_xs,terrain_ys,terrain_data,terrain_raster
     
-    net_df.geometry = fit_model(model,options.maxiter,options.mismatch_max,
+    net_df.geometry = fit_model(model,options.maxiter,max_offset_dist=options.mismatch_max,
                                 reportiter=options.maxiter,differentiate=(not options.disable_autodiff))
 
     print (f"Writing output to {options.outfile}") 

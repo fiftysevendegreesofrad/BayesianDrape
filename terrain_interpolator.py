@@ -29,7 +29,7 @@ class TerrainInterpolator(torch.nn.Module):
         dist_left[both_zero] = dist_right[both_zero] = 1. # should never happen but treat as equal distance
         return idx_left,idx_right,dist_left,dist_right
 
-    def forward(self, interp_xs, interp_ys):
+    def single_interpolate(self, interp_xs, interp_ys):
         idx_west,idx_east,dist_west,dist_east = self.dimension_values_distances(interp_xs,self.xs)
         idx_south,idx_north,dist_south,dist_north = self.dimension_values_distances(interp_ys,self.ys)
         
@@ -42,3 +42,12 @@ class TerrainInterpolator(torch.nn.Module):
         denominator = (dist_west+dist_east)*(dist_north+dist_south)
         
         return numerator / denominator
+        
+    def forward(self, interp_xs, interp_ys, smooth):
+        if smooth==0:
+            return self.single_interpolate(interp_xs,interp_ys)
+        else:
+            return 0.25*(self.single_interpolate(interp_xs-smooth,interp_ys-smooth)\
+                         +self.single_interpolate(interp_xs+smooth,interp_ys-smooth)\
+                         +self.single_interpolate(interp_xs-smooth,interp_ys+smooth)\
+                         +self.single_interpolate(interp_xs+smooth,interp_ys+smooth))
