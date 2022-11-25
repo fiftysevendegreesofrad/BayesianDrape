@@ -98,9 +98,9 @@ def insert_points_on_gridlines(line,grid,tolerance):
     else:
         return 0
         
-slope_continuity_scale_default = 90
-slope_prior_scale_default = 2.66
-pitch_angle_scale_default = 1.28
+slope_continuity_scale_default = 2.66
+slope_prior_scale_default = 90
+pitch_angle_scale_default = np.inf
 
 def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
                 geometries,

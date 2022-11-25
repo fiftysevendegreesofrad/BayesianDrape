@@ -3,6 +3,8 @@ Drape GPS traces and path networks over terrain using Bayesian maximum likelihoo
 
 ![image](https://user-images.githubusercontent.com/12543309/137376777-69e42b05-269a-4144-8bf0-16fcf1cd355c.png)
 
+**Note 25/11/2022: If you plan to use this, at present you will need to calibrate the spatial mismatch prior scale to get good results. I am working on an improved version with the aim of removing the requirement to calibrate.**
+
 ## Setup
 
 1. [Install Anaconda](https://docs.anaconda.com/anaconda/install/index.html) if you don't already have it.
