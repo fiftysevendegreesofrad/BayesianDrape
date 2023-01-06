@@ -1,5 +1,7 @@
 # BayesianDrape
-Drape GPS traces and path networks over terrain using Bayesian maximum likelihood estimation
+Drape GPS traces and path networks over terrain using Bayesian maximum likelihood estimation. [More details on the algorithm here](https://users.cs.cf.ac.uk/CooperCH/bayesiandrape.pdf).
+
+![image](https://user-images.githubusercontent.com/12543309/211039729-50f81ef3-466c-4a00-b8c8-4cd98bca9501.png)
 
 ![image](https://user-images.githubusercontent.com/12543309/137376777-69e42b05-269a-4144-8bf0-16fcf1cd355c.png)
 
