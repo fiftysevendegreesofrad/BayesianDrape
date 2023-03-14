@@ -69,7 +69,7 @@ def insert_vertices(line,splitpoints,tolerance):
             else:
                 cuts.pop(0)
                 newcoords.append(next_cut)
-    line.coords = newcoords
+    return shapely.LineString(newcoords)
 
 def insert_points_on_gridlines(line,grid,tolerance):
     # shapely does weird things if line has z!
@@ -82,10 +82,12 @@ def insert_points_on_gridlines(line,grid,tolerance):
     assert intersection.geom_type in ['MultiPoint', 'Point', 'LineString', 'GeometryCollection', 'MultiLineString']
     if not intersection.is_empty:
         # flatten to all points
-        if intersection.geom_type not in ['GeometryCollection','MultiPoint','MultiLineString']:
+        if intersection.geom_type in ['GeometryCollection','MultiPoint','MultiLineString']:
+            intersection = intersection.geoms 
+        else:
             intersection = [intersection] # treat as a collection of 1 item
         point_only_intersection = []
-        for item in list(intersection):
+        for item in intersection:
             if item.geom_type=='Point':
                 point_only_intersection.append(item)
             elif item.geom_type=='LineString':
@@ -93,19 +95,21 @@ def insert_points_on_gridlines(line,grid,tolerance):
             else:
                 print (item.geom_type)
                 assert False # intersection between lines is not point or linestring
-        insert_vertices(line,point_only_intersection,tolerance)
-        return len(point_only_intersection)
+        return insert_vertices(line,point_only_intersection,tolerance),len(point_only_intersection)
     else:
-        return 0
+        return line,0
         
 slope_continuity_scale_default = 2.66
 slope_prior_scale_default = 90
 pitch_angle_scale_default = np.inf
+nugget_default_as_fraction_of_cell_size = 1/100
+
+new_vertex_tolerance_as_fraction_of_cell_size = 1/100
 
 def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
                 geometries,
-                slope_prior_scale=slope_prior_scale_default,mismatch_prior_scale=None,slope_continuity_scale=None,
-                pitch_angle_scale=None,
+                slope_prior_scale=slope_prior_scale_default,z_error_prior_scale=None,slope_continuity_scale=None,
+                pitch_angle_scale=None,nugget=None,
                 gradient_smooth_window=0,
                 fix_geometries_mask=None,decoupled_geometries_mask=None,
                 use_cuda=False,
@@ -139,12 +143,9 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     cellstepy = terrain_index_ys[1]-terrain_index_ys[0]
     cellsizex = abs(cellstepx)
     cellsizey = abs(cellstepy)
-    if mismatch_prior_scale is None:
-        mismatch_prior_scale = max(cellsizex,cellsizey)/2
-    
-    if mismatch_prior_scale==0:
-        gradient_smooth_window=0
-    
+    if nugget is None:
+        nugget = min(cellsizex,cellsizey)*nugget_default_as_fraction_of_cell_size
+        
     # constant parameter defaults 
     # (can't use default arguments as we want to support caller passing None)
     if slope_prior_scale is None:
@@ -153,10 +154,15 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         slope_continuity_scale = slope_continuity_scale_default
     if pitch_angle_scale is None:
         pitch_angle_scale = pitch_angle_scale_default
+    if z_error_prior_scale is None:
+        z_error_prior_scale = 1 # not a magic default! gives behaviour of Hutchinson (1996)
     
+    if z_error_prior_scale==0:
+        gradient_smooth_window=0
+        
     use_pitch_angle_prior = pitch_angle_scale < np.inf
     
-    new_vertex_tolerance = min(cellsizex,cellsizey)/100 # sensible magic number should suit all purposes
+    new_vertex_tolerance = min(cellsizex,cellsizey)*new_vertex_tolerance_as_fraction_of_cell_size
 
     # ensure terrain has positively incrementing axes to keep interpolator happy
     if cellstepx<0:
@@ -193,6 +199,11 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
             points_to_interpolate = np_to_torch(points_to_interpolate)
         return terrain_interpolator_internal.forward(points_to_interpolate[:,0].contiguous(),points_to_interpolate[:,1].contiguous(),gradient_smooth_window)    
 
+    def get_max_tile_DZs(points_to_interpolate):
+        if not torch.is_tensor(points_to_interpolate):
+            points_to_interpolate = np_to_torch(points_to_interpolate)
+        return terrain_interpolator_internal.get_max_tile_DZs(points_to_interpolate[:,0].contiguous(),points_to_interpolate[:,1].contiguous())    
+
     # Feature type model: decoupled takes precedence over fixed as people are likely to fix large flat areas and decouples to smaller features like bridges within them
     num_point_types = 3
     ESTIMATED,FIXED,DECOUPLED = range(num_point_types)
@@ -216,14 +227,19 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     gridlines = MultiLineString(x_gridlines+y_gridlines)
     del x_gridlines,y_gridlines
     inserted_vertex_count = 0
+    geometries_split = []
     for geom,fix,decouple in zip(geometries,fix_geometries_mask,decoupled_geometries_mask): 
+        assert type(geom)==shapely.LineString
         use_input_z = get_feature_type(decouple,fix)==FIXED
         if not use_input_z: 
-            geom.coords = shapely.wkb.loads(shapely.wkb.dumps(geom, output_dimension=2)).coords # flatten to 2d *before* removing duplicates
-        geom.coords = remove_consecutive_duplicates(geom.coords)
+            geom = shapely.LineString(shapely.wkb.loads(shapely.wkb.dumps(geom, output_dimension=2)).coords) # remove z coordinates *before* removing duplicates
+        geom = shapely.LineString(remove_consecutive_duplicates(geom.coords))
         if not use_input_z:
-            inserted_vertex_count += insert_points_on_gridlines(geom,gridlines,new_vertex_tolerance) # to ensure every terrain point is interpolated
+            geom, num_new_vertices = insert_points_on_gridlines(geom,gridlines,new_vertex_tolerance) # to ensure every terrain point is interpolated
+            inserted_vertex_count += num_new_vertices
+        geometries_split.append(geom)
     del gridlines
+    geometries = geometries_split
     print_callback (f"  ({inserted_vertex_count} extra vertices added)")
     
     # Build point model: we represent each linestring with a point index list 
@@ -458,7 +474,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
             
     # Define priors - both implemented by hand for speed and compatibility with autodiff
     
-    print_callback(f"Spatial mismatch prior scale is {mismatch_prior_scale}")
+    print_callback(f"Z error prior scale is {z_error_prior_scale}")
     
     # Exponential*Normal grade prior
     grade_scale = np.tan(slope_prior_scale*np.pi/180)
@@ -495,16 +511,16 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     def grade_logpdf(grade): # not normalized, for efficiency+precision in main optimization
         return -grade_exp_dist_lambda*grade - slope_continuity_param*grade**2 
 
-    # 2d Gaussian offset prior
-    if mismatch_prior_scale>0:
-        squareoffset_param = normal_logpdf_param_from_scale(mismatch_prior_scale)
-        def squareoffset_logpdf(x): # not normalized, for efficiency+precision in main optimization
-            return -squareoffset_param*x # note this is a normal distribution over the offset, but we are passed square offset
+    # vertical error prior: Gaussian with std = DZ * sqrt(12)
+    if z_error_prior_scale>0:
+        k = 1/24/z_error_prior_scale
+        def z_error_logpdf(vertex_z_error,tile_max_DZ_inverse_square):
+            return -k * tile_max_DZ_inverse_square * vertex_z_error**2 
     else:
-        # allows setting mismatch_prior_scale==0 to get ordinary drape
-        def squareoffset_logpdf(x):
-            res = torch.zeros(x.shape,device=device)
-            res[x!=0]=-np.inf
+        # allows setting z_error_prior_scale==0 to get ordinary drape
+        def z_error_logpdf(vertex_z_error,tile_max_DZ_inverse_square):
+            res = torch.zeros(vertex_z_error.shape,device=device)
+            res[vertex_z_error!=0]=-np.inf
             return res
         
     # Exponential pitch angle prior
@@ -531,22 +547,23 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     
     def unpack_opt_params(opt_params):
         opt_params = np_to_torch(opt_params)
-        assert len(opt_params)==2*num_estimated_points+num_decoupled_points
-        point_offsets = torch.reshape(opt_params[0:num_estimated_points*2],all_points_arrays[ESTIMATED].shape)
-        decoupled_zs = opt_params[num_estimated_points*2:]
-        return point_offsets,decoupled_zs
+        assert len(opt_params)==num_estimated_points+num_decoupled_points
+        z_errors = opt_params[0:num_estimated_points]
+        decoupled_zs = opt_params[num_estimated_points:]
+        return z_errors,decoupled_zs
         
     def init_opt_params():
-        point_offsets = np.zeros((num_estimated_points*2),float)
+        z_errors = np.zeros(num_estimated_points,float)
         decoupled_zs = init_guess_decoupled_zs()
-        return np.concatenate((point_offsets,decoupled_zs),axis=None)
+        return np.concatenate((z_errors,decoupled_zs),axis=None)
 
-    def pack_optim_bounds(max_offset_dist):
-        offset_bounds_lower = np.zeros(num_estimated_points*2)-max_offset_dist
-        offset_bounds_upper = np.zeros(num_estimated_points*2)+max_offset_dist
+    def pack_optim_bounds():
+        terrain_DZ = terrain_max_height - terrain_min_height
+        z_error_bounds_lower = np.zeros(num_estimated_points)-terrain_DZ
+        z_error_bounds_upper = np.zeros(num_estimated_points)+terrain_DZ
         decoupled_bounds_lower = np.zeros(num_decoupled_points)+terrain_min_height
         decoupled_bounds_upper = np.zeros(num_decoupled_points)+terrain_max_height
-        return np.concatenate((offset_bounds_lower,decoupled_bounds_lower)),np.concatenate((offset_bounds_upper,decoupled_bounds_upper))
+        return np.concatenate((z_error_bounds_lower,decoupled_bounds_lower)),np.concatenate((z_error_bounds_upper,decoupled_bounds_upper))
     
     z1s_mask_fixed = gradient_test_p1_types==FIXED
     z2s_mask_fixed = gradient_test_p2_types==FIXED
@@ -561,10 +578,13 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     decoupled_zs_p1_indices = gradient_test_p1_indices[z1s_mask_decoupled]
     decoupled_zs_p2_indices = gradient_test_p2_indices[z2s_mask_decoupled]
     
+    interpolated_zs = terrain_interpolator(all_points_arrays[ESTIMATED])
+    estimated_point_max_tile_DZs_inverse_sq = (get_max_tile_DZs(all_points_arrays[ESTIMATED])+nugget)**-2
+    
     def likelihood_breakdown(opt_params):
-        point_offsets,decoupled_zs = unpack_opt_params(opt_params)
+        z_errors,decoupled_zs = unpack_opt_params(opt_params)
         
-        estimated_zs = terrain_interpolator(all_points_arrays[ESTIMATED] + point_offsets)
+        estimated_zs = interpolated_zs + z_errors
         
         z1s = torch.zeros(num_gradient_tests,dtype=torch.double,device=device)
         z2s = torch.zeros(num_gradient_tests,dtype=torch.double,device=device)
@@ -588,15 +608,13 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
             pitch_angles = grade_change_angle(pitch_angle_g1s,pitch_angle_g2s)
             pitch_angle_likelihood = pitch_angle_logpdf(pitch_angles).sum() 
         
-        # Log likelihood of point offsets
-        offset_square_distances = (point_offsets**2).sum(axis=1)
-        offset_likelihood = squareoffset_logpdf(offset_square_distances).sum()
-        
-        return neighbour_likelihood,offset_likelihood,pitch_angle_likelihood
+        # Log likelihood of z errors
+        z_error_likelihood = z_error_logpdf(z_errors,estimated_point_max_tile_DZs_inverse_sq).sum()
+        return neighbour_likelihood,z_error_likelihood,pitch_angle_likelihood
         
     def likelihood_report(opt_params):
         n,o,c = map(float,likelihood_breakdown(opt_params))
-        return n+o+c,f"   (Offset likelihood {o:.1f}, Slope likelihood {n:.1f}, Pitch angle likelihood {c:.1f})"
+        return n+o+c,f"   (Z error likelihood {o:.1f}, Slope likelihood {n:.1f}, Pitch angle likelihood {c:.1f})"
         
     def minus_log_likelihood(opt_params):
         n,o,c = likelihood_breakdown(opt_params)
@@ -612,15 +630,16 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         return opt_params.grad.cpu()
         
     def reconstruct_geometries(opt_results):
-        final_offsets,final_decoupled_zs = unpack_opt_params(opt_results)
+        final_z_errors,final_decoupled_zs = unpack_opt_params(opt_results)
         final_log_likelihood = -minus_log_likelihood(opt_results)
-        final_estimated_zs = terrain_interpolator(all_points_arrays[ESTIMATED] + final_offsets)
+        final_estimated_zs = interpolated_zs + final_z_errors
         
-        # Print report on offsets
-        offset_distances = ((final_offsets**2).sum(axis=1))**0.5
-        mean_offset_dist = float(offset_distances.mean())
-        max_offset_dist = float(offset_distances.max())
-        print_callback (f"Offset distance mean={mean_offset_dist:.2f}, max={max_offset_dist:.2f}")
+        # Print report on z errors
+        mean_z_error = float(final_z_errors.mean())
+        std_z_error = float(final_z_errors.std())
+        max_z_error = float(final_z_errors.max())
+        min_z_error = float(final_z_errors.min())
+        print_callback (f"Z error mean={mean_z_error:.2f}, std={std_z_error:.2f}, range=({min_z_error:.2f},{max_z_error:.2f})")
 
         def get_point_output(index_tuple):
             pt_type,pt_index = index_tuple
@@ -636,19 +655,19 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         return [LineString([get_point_output(pt_index) for pt_index in row_point_indices]) for row_point_indices in point_indices_all_rows]
     
     return_dict = dict(grade_logpdf=grade_logpdf,
-                  squareoffset_logpdf=squareoffset_logpdf,
+                  z_error_logpdf=z_error_logpdf,
                   minus_log_likelihood=lambda x: float(mll_cpu(x)),
                   minus_log_likelihood_gradient=minus_log_likelihood_gradient,
                   likelihood_report=likelihood_report,
                   initial_guess=init_opt_params(),
                   reconstruct_geometries_from_optimizer_results=reconstruct_geometries,
-                  mismatch_prior_scale=mismatch_prior_scale,
+                  z_error_prior_scale=z_error_prior_scale,
                   optim_bounds = pack_optim_bounds
                   )
     BayesianDrapeModel = namedtuple("BayesianDrapeModel",return_dict)
     return BayesianDrapeModel(**return_dict)
     
-def fit_model(model,maxiter,max_offset_dist=np.inf,print_callback=print,reportiter=5,differentiate=True):
+def fit_model(model,maxiter,print_callback=print,reportiter=5,differentiate=True):
     initial_log_likelihood,initial_lik_report = model.likelihood_report(model.initial_guess)
     print_callback(f"Num params: {model.initial_guess.shape[0]}")
     last_ll = initial_log_likelihood
@@ -676,7 +695,7 @@ def fit_model(model,maxiter,max_offset_dist=np.inf,print_callback=print,reportit
             text = f"Iteration {callback_count} log likelihood = {ll:.1f} (-{lldiff:.3f} over {reportiter} iterations) ({tdiff/reportiter*100:.2f}s per 100 iterations)         "
             print_callback (text+"\r",end="")
     
-    lower_bounds,upper_bounds = model.optim_bounds(max_offset_dist)
+    lower_bounds,upper_bounds = model.optim_bounds()
     jac = model.minus_log_likelihood_gradient if differentiate else None
     print_callback (f"Starting optimizer log likelihood = {initial_log_likelihood:.1f}\n{initial_lik_report}")
     init_time = time.perf_counter()
@@ -718,12 +737,12 @@ def fit_model_from_command_line_options():
     op.add_option("--FIX-FIELD",dest="fixfield",help="Instead of estimating heights, preserve input z on features where FIELDNAME=true",metavar="FIELDNAME")
     op.add_option("--DECOUPLE-FIELD",dest="decouplefield",help="Instead of estimating heights, decouple features from terrain where FIELDNAME=true (useful for bridges/tunnels)",metavar="FIELDNAME")
     
-    op.add_option("--SPATIAL-MISMATCH-PRIOR-SCALE",dest="mismatch_prior_scale",help="Scale of zero-centred Gaussian prior for spatial mismatch (in spatial units of projection; defaults to half terrain raster cell size)",metavar="DISTANCE",type="float")
+    op.add_option("--Z-ERROR-PRIOR-SCALE",dest="z_error_prior_scale",help="Scale of Gaussian prior for z mismatch (Defaults to 1, giving Hutchinson (1996) model. Set to 0 for simple drape. Higher numbers allow greater z correction)",metavar="SCALE",type="float")
     op.add_option("--SLOPE-PRIOR-SCALE",dest="slope_prior_scale",help=f"Scale of exponential prior for path slope (equivalent to mean slope; defaults to {slope_prior_scale_default}; measured in degrees but prior is over grade)",metavar="ANGLE_IN_DEGREES",type="float")
     op.add_option("--SLOPE-CONTINUITY-PRIOR-SCALE",dest="slope_continuity",help=f"Scale of Gaussian (slope continuity) prior for path slope (equivalent to mean slope; defaults to {slope_continuity_scale_default}; measured in degrees but prior is over grade)",metavar="ANGLE_IN_DEGREES",type="float")
     op.add_option("--PITCH-ANGLE-PRIOR-SCALE",dest="pitch_angle_scale",help=f"Pitch angle prior scale (defaults to {pitch_angle_scale_default})",metavar="ANGLE_IN_DEGREES",type="float")
-    op.add_option("--SPATIAL-MISMATCH-MAX",dest="mismatch_max",help="Maximum permissible spatial mismatch (in spatial units of projection; defaults to maximum terrain tile dimension)",metavar="DISTANCE",type="float")
     op.add_option("--MAXITER",dest="maxiter",help=f"Maximum number of optimizer iterations (defaults to {maxiter_default})",metavar="N",type="int",default=maxiter_default)
+    op.add_option("--NUGGET",dest="nugget",help=f"Nugget / assumed minimum elevation difference in flat terrain cell (defaults to {nugget_default_as_fraction_of_cell_size}*cell size)",metavar="Z_DISTANCE",type="float")
     op.add_option("--GPU",dest="cuda",action="store_true",help="Enable GPU acceleration")
     op.add_option("--NUM-THREADS",dest="threads",help="Set number of threads for multiprocessing (defaults to number of available cores)",type="int",metavar="N")
     op.add_option("--IGNORE-PROJ-MISMATCH",dest="ignore_proj_mismatch",action="store_true",help="Ignore mismatched projections",default=False)
@@ -769,22 +788,19 @@ def fit_model_from_command_line_options():
     fix_geometries_mask = net_df[options.fixfield] if options.fixfield else None
     decouple_geometries_mask = net_df[options.decouplefield] if options.decouplefield else None
         
-    if not options.mismatch_max:
-        options.mismatch_max = max(abs(terrain_xs[1]-terrain_xs[0]),abs(terrain_ys[1]-terrain_ys[0]))
-        print (f"Maximum spatial mismatch set from larger terrain tile dimension: {options.mismatch_max:.2f}")
-        
     model = build_model(terrain_xs,terrain_ys,terrain_data,net_df.geometry,
                         slope_prior_scale = options.slope_prior_scale,
-                        mismatch_prior_scale = options.mismatch_prior_scale,
+                        z_error_prior_scale = options.z_error_prior_scale,
                         slope_continuity_scale = options.slope_continuity,
                         pitch_angle_scale = options.pitch_angle_scale,
+                        nugget = options.nugget,
                         fix_geometries_mask = fix_geometries_mask,
                         decoupled_geometries_mask = decouple_geometries_mask,
                         use_cuda = options.cuda)
     
     del terrain_xs,terrain_ys,terrain_data,terrain_raster
     
-    net_df.geometry = fit_model(model,options.maxiter,max_offset_dist=options.mismatch_max,
+    net_df.geometry = fit_model(model,options.maxiter,
                                 reportiter=options.maxiter,differentiate=(not options.disable_autodiff))
 
     print (f"Writing output to {options.outfile}") 

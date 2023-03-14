@@ -29,7 +29,7 @@ class TerrainInterpolator(torch.nn.Module):
         dist_left[both_zero] = dist_right[both_zero] = 1. # should never happen but treat as equal distance
         return idx_left,idx_right,dist_left,dist_right
 
-    def single_interpolate(self, interp_xs, interp_ys):
+    def get_tile_corner_zs(self,interp_xs,interp_ys):
         idx_west,idx_east,dist_west,dist_east = self.dimension_values_distances(interp_xs,self.xs)
         idx_south,idx_north,dist_south,dist_north = self.dimension_values_distances(interp_ys,self.ys)
         
@@ -38,10 +38,20 @@ class TerrainInterpolator(torch.nn.Module):
         northeast = self.zs[idx_east,idx_north]
         southeast = self.zs[idx_east,idx_south]
         
+        return (southwest,northwest,northeast,southeast),(dist_north,dist_east,dist_south,dist_west)
+        
+    def single_interpolate(self, interp_xs, interp_ys):
+        (southwest,northwest,northeast,southeast),(dist_north,dist_east,dist_south,dist_west) = self.get_tile_corner_zs(interp_xs,interp_ys)
         numerator = southwest*dist_north*dist_east + northwest*dist_south*dist_east + northeast*dist_south*dist_west + southeast*dist_north*dist_west
         denominator = (dist_west+dist_east)*(dist_north+dist_south)
+        return numerator / denominator 
         
-        return numerator / denominator
+    def get_max_tile_DZs(self,interp_xs,interp_ys):
+        corners,_ = self.get_tile_corner_zs(interp_xs,interp_ys)
+        corners = torch.hstack([torch.reshape(corner,(-1,1)) for corner in corners])
+        res = torch.max(corners,1).values-torch.min(corners,1).values
+        assert res.size()==interp_xs.size()
+        return res
         
     def forward(self, interp_xs, interp_ys, smooth):
         if smooth==0:
