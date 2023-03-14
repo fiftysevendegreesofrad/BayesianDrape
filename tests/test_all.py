@@ -30,21 +30,21 @@ def lltest(net_file,original_lls,original_gradient,times=False):
     model = BayesianDrape.build_model(terrain_xs,terrain_ys,terrain_data,net_df.geometry,slope_prior_scale=slope_prior,slope_continuity_scale=cont_scale,
                 pitch_angle_scale=pitch_prior,use_cuda=False)
     
-    num_estimated_points = int(model.initial_guess.shape[0]/2)
+    num_estimated_points = int(model.initial_guess.shape[0])
     print (f"{num_estimated_points=}")
-    offset_unit_vector = np.zeros((num_estimated_points,2),float)
-    grad_test_input = torch.flatten(np_to_torch(offset_unit_vector))
+    error_vector = np.zeros((num_estimated_points),float)
+    grad_test_input = torch.flatten(np_to_torch(error_vector))
    
     print ("Old gradient[0]",original_gradient)
-    new_gradient_0 = model.minus_log_likelihood_gradient(grad_test_input)[0:2].numpy()
+    new_gradient_0 = model.minus_log_likelihood_gradient(grad_test_input)[0].numpy()
     print("New gradient[0]",new_gradient_0)
     
     for i in range(num_estimated_points):
-        offset_unit_vector[i]=np.array([(i//3)%3,i%3])-1
+        error_vector[i]=(i%3)-1
     
     new_lls = []
     for i,oll in enumerate(original_lls):
-        ll = float(model.minus_log_likelihood(torch.flatten(np_to_torch(offset_unit_vector*i))))
+        ll = float(model.minus_log_likelihood(torch.flatten(np_to_torch(error_vector*i))))
         new_lls.append(ll)
         passed=(ll==oll)
         print (f"{i=} {oll=} {ll=} {passed=}")
@@ -87,3 +87,4 @@ def test_autodiff_cell_boundary():
         print_point_inter_and_grad(point)
 
     
+test_log_likelihood_small()
