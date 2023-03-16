@@ -69,7 +69,7 @@ def insert_vertices(line,splitpoints,tolerance):
             else:
                 cuts.pop(0)
                 newcoords.append(next_cut)
-    return shapely.LineString(newcoords)
+    return LineString(newcoords)
 
 def insert_points_on_gridlines(line,grid,tolerance):
     # shapely does weird things if line has z!
@@ -229,11 +229,11 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     inserted_vertex_count = 0
     geometries_split = []
     for geom,fix,decouple in zip(geometries,fix_geometries_mask,decoupled_geometries_mask): 
-        assert type(geom)==shapely.LineString
+        assert type(geom)==LineString
         use_input_z = get_feature_type(decouple,fix)==FIXED
         if not use_input_z: 
-            geom = shapely.LineString(shapely.wkb.loads(shapely.wkb.dumps(geom, output_dimension=2)).coords) # remove z coordinates *before* removing duplicates
-        geom = shapely.LineString(remove_consecutive_duplicates(geom.coords))
+            geom = LineString(shapely.wkb.loads(shapely.wkb.dumps(geom, output_dimension=2)).coords) # remove z coordinates *before* removing duplicates
+        geom = LineString(remove_consecutive_duplicates(geom.coords))
         if not use_input_z:
             geom, num_new_vertices = insert_points_on_gridlines(geom,gridlines,new_vertex_tolerance) # to ensure every terrain point is interpolated
             inserted_vertex_count += num_new_vertices
