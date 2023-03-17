@@ -477,10 +477,11 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     print_callback(f"Z error prior scale is {z_error_prior_scale}")
     
     # Exponential*Normal grade prior
-    grade_scale = np.tan(slope_prior_scale*np.pi/180)
+    grade_scale = np.tan(slope_prior_scale*np.pi/180) if slope_prior_scale<90 else np.inf
     slope_continuity_grade_scale = np.tan(slope_continuity_scale*np.pi/180) if slope_continuity_scale<90 else np.inf
     print_callback(f"Slope prior scale of {slope_prior_scale}\N{DEGREE SIGN} gives grade of {grade_scale*100:.1f}%")
-    
+    print_callback(f"Slope continuity prior scale of {slope_continuity_scale}\N{DEGREE SIGN} gives grade of {slope_continuity_grade_scale*100:.1f}%")
+
     def normal_logpdf_param_from_scale(scale):
         assert scale>0
         return 1/2/scale**2
