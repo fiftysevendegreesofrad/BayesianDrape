@@ -516,7 +516,9 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     if z_error_prior_scale>0:
         k = 6 / z_error_prior_scale**2
         def z_error_logpdf(vertex_z_error,tile_max_DZ_inverse_square):
-            return -k * tile_max_DZ_inverse_square * vertex_z_error**2 
+            res = -k * tile_max_DZ_inverse_square * vertex_z_error**2 
+            res[torch.isnan(res)] = 0 # zero z-error on a flat tile is fine
+            return res
     else:
         # allows setting z_error_prior_scale==0 to get ordinary drape
         def z_error_logpdf(vertex_z_error,tile_max_DZ_inverse_square):
