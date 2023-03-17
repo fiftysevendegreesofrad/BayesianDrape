@@ -511,9 +511,10 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     def grade_logpdf(grade): # not normalized, for efficiency+precision in main optimization
         return -grade_exp_dist_lambda*grade - slope_continuity_param*grade**2 
 
-    # vertical error prior: Gaussian with std = DZ * sqrt(12)
+    # vertical error prior: Gaussian with std = DZ / sqrt(12) * z_error_prior_scale
+    # So logpdf = -0.5 x**2 / std**2 = -0.5 x**2 / ((DZ**2 * z_error_prior_scale**2)/12) = -6/z_error_prior_scale**2  x**2 / DZ**2
     if z_error_prior_scale>0:
-        k = 1/24/z_error_prior_scale
+        k = 6 / z_error_prior_scale**2
         def z_error_logpdf(vertex_z_error,tile_max_DZ_inverse_square):
             return -k * tile_max_DZ_inverse_square * vertex_z_error**2 
     else:
