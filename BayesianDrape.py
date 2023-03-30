@@ -99,17 +99,17 @@ def insert_points_on_gridlines(line,grid,tolerance):
     else:
         return line,0
         
-slope_continuity_scale_default = 2.66
-slope_prior_scale_default = 90
-pitch_angle_scale_default = np.inf
+slope_continuity_param_default = 0.5
+slope_prior_mean_default = 2.66
+pitch_angle_mean_default = np.inf
 nugget_default_as_fraction_of_cell_size = 1/100
 
 new_vertex_tolerance_as_fraction_of_cell_size = 1/100
 
 def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
                 geometries,
-                slope_prior_scale=slope_prior_scale_default,z_error_prior_scale=None,slope_continuity_scale=None,
-                pitch_angle_scale=None,nugget=None,
+                slope_prior_mean=slope_prior_mean_default,z_error_prior_scale=None,slope_continuity_param=None,
+                pitch_angle_mean=None,nugget=None,
                 gradient_smooth_window=0,
                 fix_geometries_mask=None,decoupled_geometries_mask=None,
                 use_cuda=False,
@@ -148,19 +148,22 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         
     # constant parameter defaults 
     # (can't use default arguments as we want to support caller passing None)
-    if slope_prior_scale is None:
-        slope_prior_scale = slope_prior_scale_default
-    if slope_continuity_scale is None:
-        slope_continuity_scale = slope_continuity_scale_default
-    if pitch_angle_scale is None:
-        pitch_angle_scale = pitch_angle_scale_default
+    if slope_prior_mean is None:
+        slope_prior_mean = slope_prior_mean_default
+    if slope_continuity_param is None:
+        slope_continuity_param = slope_continuity_param_default
+    if pitch_angle_mean is None:
+        pitch_angle_mean = pitch_angle_mean_default
     if z_error_prior_scale is None:
         z_error_prior_scale = 1 # not a magic default! gives behaviour of Hutchinson (1996)
+    
+    assert slope_continuity_param <= 1
+    assert slope_continuity_param >= 0
     
     if z_error_prior_scale==0:
         gradient_smooth_window=0
         
-    use_pitch_angle_prior = pitch_angle_scale < np.inf
+    use_pitch_angle_prior = pitch_angle_mean < np.inf
     
     new_vertex_tolerance = min(cellsizex,cellsizey)*new_vertex_tolerance_as_fraction_of_cell_size
 
@@ -477,40 +480,23 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     print_callback(f"Z error prior scale is {z_error_prior_scale}")
     
     # Exponential*Normal grade prior
-    grade_scale = np.tan(slope_prior_scale*np.pi/180) if slope_prior_scale<90 else np.inf
-    slope_continuity_grade_scale = np.tan(slope_continuity_scale*np.pi/180) if slope_continuity_scale<90 else np.inf
-    print_callback(f"Slope prior scale of {slope_prior_scale}\N{DEGREE SIGN} gives grade of {grade_scale*100:.1f}%")
-    print_callback(f"Slope continuity prior scale of {slope_continuity_scale}\N{DEGREE SIGN} gives grade of {slope_continuity_grade_scale*100:.1f}%")
-
-    def normal_logpdf_param_from_scale(scale):
-        assert scale>0
-        return 1/2/scale**2
-    def exp_logpdf_param_from_scale(scale):
-        assert scale>0
-        return 1/scale
+    assert slope_prior_mean < 90
+    grade_mean = np.tan(slope_prior_mean*np.pi/180) 
+    print_callback(f"Slope prior mean of {slope_prior_mean}\N{DEGREE SIGN} gives grade of {grade_mean*100:.1f}%")
     
-    grade_exp_dist_lambda = exp_logpdf_param_from_scale(grade_scale)
-    slope_continuity_param = normal_logpdf_param_from_scale(slope_continuity_grade_scale)
+    def halfnormal_logpdf_param_from_mean(mean):
+        assert mean>0
+        return 1/(mean**2*np.pi)
+    def exp_logpdf_param_from_mean(mean):
+        assert mean>0
+        return 1/mean
     
-    # Normalized grade_pdf used to give print some messages about physical interpretation of slope_continuity_grade_scale, though not used in main optimization
-    def grade_pdf_normalized(slope_continuity_grade_scale,grade_scale,grade):
-        if slope_continuity_grade_scale==np.inf:
-            return grade_scale**-1*np.exp(-grade/grade_scale)
-        else:
-            slope_continuity_param_local = normal_logpdf_param_from_scale(slope_continuity_grade_scale)
-            norm_const = (np.exp(1/(4*slope_continuity_param_local*grade_scale**2))*(np.pi**0.5) * erfc(1/(2*slope_continuity_param_local**0.5*grade_scale)))/(2*slope_continuity_param_local**0.5)
-            return norm_const**-1*np.exp(-grade/grade_scale-slope_continuity_param_local*grade**2) 
+    grade_exp_dist_param = exp_logpdf_param_from_mean(grade_mean)*(1-slope_continuity_param)
+    grade_halfnormal_dist_param = halfnormal_logpdf_param_from_mean(grade_mean)*slope_continuity_param
     
-    if slope_continuity_param>0:
-        print_callback(f"Slope continuity prior scale of {slope_continuity_scale}\N{DEGREE SIGN} gives grade of {slope_continuity_grade_scale*100:.1f}%")
-        impact_sc_grade0 = grade_pdf_normalized(slope_continuity_grade_scale,grade_scale,0)/grade_pdf_normalized(np.inf,grade_scale,0)
-        impact_sc_grade05 = grade_pdf_normalized(slope_continuity_grade_scale,grade_scale,0.5)/grade_pdf_normalized(np.inf,grade_scale,0.5)
-        print_callback (f" * Probability multiplier attributable to slope continuity prior for grade=0.0: {impact_sc_grade0}")
-        print_callback (f" * Probability multiplier attributable to slope continuity prior for grade=0.5: {impact_sc_grade05}")
-    
-    # Grade prior is a mixture of exponential and Gaussian
+    # Grade prior is a mixture of exponential and Gaussian parameterized by slope_continuity_param
     def grade_logpdf(grade): # not normalized, for efficiency+precision in main optimization
-        return -grade_exp_dist_lambda*grade - slope_continuity_param*grade**2 
+        return -grade_exp_dist_param*grade - grade_halfnormal_dist_param*grade**2 
 
     # vertical error prior: Gaussian with std = DZ / sqrt(12) * z_error_prior_scale
     # So logpdf = -0.5 x**2 / std**2 = -0.5 x**2 / ((DZ**2 * z_error_prior_scale**2)/12) = -6/z_error_prior_scale**2  x**2 / DZ**2
@@ -528,7 +514,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
             return res
         
     # Exponential pitch angle prior
-    pitch_exp_dist_lambda = exp_logpdf_param_from_scale(pitch_angle_scale)
+    pitch_exp_dist_lambda = exp_logpdf_param_from_mean(pitch_angle_mean)
     def pitch_angle_logpdf(x):
         return -pitch_exp_dist_lambda*x
         
@@ -742,9 +728,9 @@ def fit_model_from_command_line_options():
     op.add_option("--DECOUPLE-FIELD",dest="decouplefield",help="Instead of estimating heights, decouple features from terrain where FIELDNAME=true (useful for bridges/tunnels)",metavar="FIELDNAME")
     
     op.add_option("--Z-ERROR-PRIOR-SCALE",dest="z_error_prior_scale",help="Scale of Gaussian prior for z mismatch (Defaults to 1, giving Hutchinson (1996) model. Set to 0 for simple drape. Higher numbers allow greater z correction)",metavar="SCALE",type="float")
-    op.add_option("--SLOPE-PRIOR-SCALE",dest="slope_prior_scale",help=f"Scale of exponential prior for path slope (equivalent to mean slope; defaults to {slope_prior_scale_default}; measured in degrees but prior is over grade)",metavar="ANGLE_IN_DEGREES",type="float")
-    op.add_option("--SLOPE-CONTINUITY-PRIOR-SCALE",dest="slope_continuity",help=f"Scale of Gaussian (slope continuity) prior for path slope (equivalent to mean slope; defaults to {slope_continuity_scale_default}; measured in degrees but prior is over grade)",metavar="ANGLE_IN_DEGREES",type="float")
-    op.add_option("--PITCH-ANGLE-PRIOR-SCALE",dest="pitch_angle_scale",help=f"Pitch angle prior scale (defaults to {pitch_angle_scale_default})",metavar="ANGLE_IN_DEGREES",type="float")
+    op.add_option("--SLOPE-PRIOR-MEAN",dest="slope_prior_mean",help=f"Mean of prior for path slope (defaults to {slope_prior_mean_default}; measured in degrees but prior is over grade)",metavar="ANGLE_IN_DEGREES",type="float")
+    op.add_option("--SLOPE-CONTINUITY-PARAM",dest="slope_continuity_param",help=f"Parameter for shape of slope prior; set to 0 for exponential or 1 for Gaussian; defaults to {slope_continuity_param_default}.",metavar="PARAM",type="float")
+    op.add_option("--PITCH-ANGLE-PRIOR-MEAN",dest="pitch_angle_mean",help=f"Pitch angle prior mean (defaults to {pitch_angle_mean_default})",metavar="ANGLE_IN_DEGREES",type="float")
     op.add_option("--MAXITER",dest="maxiter",help=f"Maximum number of optimizer iterations (defaults to {maxiter_default})",metavar="N",type="int",default=maxiter_default)
     op.add_option("--NUGGET",dest="nugget",help=f"Nugget / assumed minimum elevation difference in flat terrain cell (defaults to {nugget_default_as_fraction_of_cell_size}*cell size)",metavar="Z_DISTANCE",type="float")
     op.add_option("--GPU",dest="cuda",action="store_true",help="Enable GPU acceleration")
@@ -793,10 +779,10 @@ def fit_model_from_command_line_options():
     decouple_geometries_mask = net_df[options.decouplefield] if options.decouplefield else None
         
     model = build_model(terrain_xs,terrain_ys,terrain_data,net_df.geometry,
-                        slope_prior_scale = options.slope_prior_scale,
+                        slope_prior_mean = options.slope_prior_mean,
                         z_error_prior_scale = options.z_error_prior_scale,
-                        slope_continuity_scale = options.slope_continuity,
-                        pitch_angle_scale = options.pitch_angle_scale,
+                        slope_continuity_param = options.slope_continuity_param,
+                        pitch_angle_mean = options.pitch_angle_mean,
                         nugget = options.nugget,
                         fix_geometries_mask = fix_geometries_mask,
                         decoupled_geometries_mask = decouple_geometries_mask,
