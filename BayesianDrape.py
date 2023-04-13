@@ -306,6 +306,8 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     print_callback (num_decoupled_points,"points are decoupled")
     print_callback (num_fixed_points,"points are fixed")
     assert num_estimated_points > 0
+    
+    est_pts_total_adjoining_segment_length = np.zeros(num_estimated_points)
 
     def get_point_type_and_index(point):
         t = point_to_type[point]
@@ -389,6 +391,11 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     for (type1,index1,(x1,y1)),(type2,index2,(x2,y2)) in all_neighbouring_points():
         dist = ((x2-x1)**2+(y2-y1)**2)**0.5
         assert dist>0
+        
+        if type1==ESTIMATED:
+            est_pts_total_adjoining_segment_length[index1] += dist
+        if type2==ESTIMATED:
+            est_pts_total_adjoining_segment_length[index2] += dist
         
         if ((type1,type2)!=(FIXED,FIXED)
             or ((type1,type2)==(FIXED,FIXED) and use_pitch_angle_prior and (index1 in fixed_point_adjacent_to_nonfixed or index2 in fixed_point_adjacent_to_nonfixed))):
@@ -522,6 +529,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
 
     # Prepare arrays for likelihood tests
     gradient_test_weights = np_to_torch(gradient_test_distances / mean_estimated_segment_length)
+    z_error_weights = np_to_torch(est_pts_total_adjoining_segment_length / 2 / mean_estimated_segment_length)
     gradient_test_inv_distances = np_to_torch(gradient_test_distances**-1)
     gradient_test_p1_indices = np_to_torch(gradient_test_p1_indices)
     gradient_test_p2_indices = np_to_torch(gradient_test_p2_indices)
@@ -532,7 +540,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     pitch_angle_test_g2_indices = np_to_torch(pitch_angle_test_g2_indices)
     pitch_angle_test_g2_senses = np_to_torch(pitch_angle_test_g2_senses)
     
-    del gradient_test_distances
+    del gradient_test_distances, est_pts_total_adjoining_segment_length
     all_points_arrays = [np_to_torch(a) for a in all_points_arrays]
     
     def unpack_opt_params(opt_params):
@@ -591,6 +599,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         
         pitch_angle_likelihood = 0
         if use_pitch_angle_prior:
+            assert False
             # gradients*sense gives gradient looking out from the pair midpoint
             # to assess slope continuity we need to invert one of these gradients again to simulate arriving and leaving
             pitch_angle_g1s = neighbour_grades[pitch_angle_test_g1_indices]*pitch_angle_test_g1_senses*-1
@@ -599,7 +608,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
             pitch_angle_likelihood = pitch_angle_logpdf(pitch_angles).sum() 
         
         # Log likelihood of z errors
-        z_error_likelihood = z_error_logpdf(z_errors,estimated_point_max_tile_DZs_inverse_sq).sum()
+        z_error_likelihood = (z_error_logpdf(z_errors,estimated_point_max_tile_DZs_inverse_sq)*z_error_weights).sum()
         return neighbour_likelihood,z_error_likelihood,pitch_angle_likelihood
         
     def likelihood_report(opt_params):
