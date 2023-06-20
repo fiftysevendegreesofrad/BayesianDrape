@@ -626,7 +626,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         opt_params = np_to_torch(opt_params)
         opt_params.requires_grad = True
         minus_log_likelihood(opt_params).backward() 
-        return opt_params.grad.cpu()
+        return torch.nan_to_num(opt_params.grad,nan=0,posinf=np.inf,neginf=-np.inf).cpu()
         
     def reconstruct_geometries(opt_results):
         final_z_errors,final_decoupled_zs = unpack_opt_params(opt_results)
