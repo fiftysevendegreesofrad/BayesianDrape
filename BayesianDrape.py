@@ -397,8 +397,6 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
             assert type1!=DECOUPLED # handled above
             decoupled_graph_add(index2,type1,index1,dist)
     
-    del fixed_point_adjacent_to_nonfixed
-    
     all_points_arrays = [np.array(s) for s in all_points_sets]
     del all_points_sets,point_to_type
     decoupled_graph = decoupled_graph.tocsr()
