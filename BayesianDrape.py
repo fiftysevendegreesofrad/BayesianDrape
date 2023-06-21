@@ -101,16 +101,15 @@ def insert_points_on_gridlines(line,grid,tolerance):
         
 slope_continuity_param_default = 0.5
 slope_prior_mean_default = 2.66
-pitch_angle_mean_default = np.inf
-nugget_default_as_fraction_of_cell_size = 1/100
 
+nugget_default_as_fraction_of_cell_size = 1/100
 new_vertex_tolerance_as_fraction_of_cell_size = 1/100
 gradient_smooth_window_default_as_fraction_of_cell_size = 1/100
 
 def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
                 geometries,
                 slope_prior_mean=slope_prior_mean_default,z_error_prior_scale=None,slope_continuity_param=None,
-                pitch_angle_mean=None,nugget=None,
+                nugget=None,
                 z_smooth_window=0,gradient_smooth_window=None,
                 fix_geometries_mask=None,decoupled_geometries_mask=None,
                 use_cuda=False,
@@ -156,8 +155,6 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         slope_prior_mean = slope_prior_mean_default
     if slope_continuity_param is None:
         slope_continuity_param = slope_continuity_param_default
-    if pitch_angle_mean is None:
-        pitch_angle_mean = pitch_angle_mean_default
     if z_error_prior_scale is None:
         z_error_prior_scale = 1 # not a magic default! gives behaviour of Hutchinson (1996)
     
@@ -167,8 +164,6 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     if z_error_prior_scale==0:
         z_smooth_window=0
         
-    use_pitch_angle_prior = pitch_angle_mean < np.inf
-    
     new_vertex_tolerance = min(cellsizex,cellsizey)*new_vertex_tolerance_as_fraction_of_cell_size
 
     # ensure terrain has positively incrementing axes to keep interpolator happy
@@ -378,15 +373,6 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
                 assert (type1,index1)!=(type2,index2) # duplicate point
                 yield (type1,index1,point1),(type2,index2,point2)
     
-    # pass through data again to determine which fixed points are next to others for pitch_angle test
-    fixed_point_adjacent_to_nonfixed = set()
-    if use_pitch_angle_prior:
-        for (type1,index1,_),(type2,index2,_) in all_neighbouring_points():
-            if type1==FIXED and type2!=FIXED:
-                fixed_point_adjacent_to_nonfixed.add(index1)
-            if type2==FIXED and type1!=FIXED:
-                fixed_point_adjacent_to_nonfixed.add(index2)
-    
     # Build all matrices (another pass through data)
     # provided we optimize all points together, we only store distances in one direction
     # otherwise each gradient likelihood is counted twice, which breaks log likelihood
@@ -401,9 +387,8 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         if type2==ESTIMATED:
             est_pts_total_adjoining_segment_length[index2] += dist
         
-        if ((type1,type2)!=(FIXED,FIXED)
-            or ((type1,type2)==(FIXED,FIXED) and use_pitch_angle_prior and (index1 in fixed_point_adjacent_to_nonfixed or index2 in fixed_point_adjacent_to_nonfixed))):
-                add_gradient_test(type1,index1,type2,index2,dist)
+        if (type1,type2)!=(FIXED,FIXED):
+            add_gradient_test(type1,index1,type2,index2,dist)
             
         if type1==DECOUPLED:
             decoupled_graph_add(index1,type2,index2,dist)
@@ -413,28 +398,6 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     
     del fixed_point_adjacent_to_nonfixed
     
-    # build pitch_angle test
-    pitch_angle_test_g1_indices = []
-    pitch_angle_test_g2_indices = []
-    pitch_angle_test_g1_senses = []
-    pitch_angle_test_g2_senses = []
-    if use_pitch_angle_prior:
-        point_to_adjoining_gradients = defaultdict(list)
-        for index,point1,point2 in all_gradient_tests():
-            # this is not, though at first glance it appears to be, a symmetric adjacency matrix
-            # it's adjacency of points to segments, which are of different types
-            point_to_adjoining_gradients[point1].append((index,1)) # (index, sense):  gradients are computed from p1 to p2
-            point_to_adjoining_gradients[point2].append((index,-1))# reading gradient *from* p2 we later need to multiply by -1
-            
-        for adjoining_gradients in point_to_adjoining_gradients.values():
-            for (ind1,sense1),(ind2,sense2) in combinations(adjoining_gradients,2):
-                pitch_angle_test_g1_indices.append(ind1)
-                pitch_angle_test_g2_indices.append(ind2)
-                pitch_angle_test_g1_senses.append(sense1)
-                pitch_angle_test_g2_senses.append(sense2)
-        
-        del point_to_adjoining_gradients
-
     all_points_arrays = [np.array(s) for s in all_points_sets]
     del all_points_sets,point_to_type
     decoupled_graph = decoupled_graph.tocsr()
@@ -444,12 +407,6 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     gradient_test_p2_indices = np.array(gradient_test_p2_indices,dtype=np.longlong)
     gradient_test_distances = np.array(gradient_test_distances)
     num_gradient_tests = len(gradient_test_distances)
-    
-    pitch_angle_test_g1_indices = np.array(pitch_angle_test_g1_indices,dtype=np.longlong)
-    pitch_angle_test_g1_indices = np.array(pitch_angle_test_g1_indices,dtype=np.longlong)
-    pitch_angle_test_g2_indices = np.array(pitch_angle_test_g2_indices,dtype=np.longlong)
-    pitch_angle_test_g1_senses = np.array(pitch_angle_test_g1_senses,dtype=np.byte)
-    pitch_angle_test_g2_senses = np.array(pitch_angle_test_g2_senses,dtype=np.byte)
     
     print_callback(f"Minimum estimated segment length {gradient_test_distances.min():.2f}")
             
@@ -522,11 +479,6 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
             res[vertex_z_error!=0]=-np.inf
             return res
         
-    # Exponential pitch angle prior
-    pitch_exp_dist_lambda = exp_logpdf_param_from_mean(pitch_angle_mean)
-    def pitch_angle_logpdf(x):
-        return -pitch_exp_dist_lambda*x
-        
     # Define posterior log likelihood
 
     # Prepare arrays for likelihood tests
@@ -537,10 +489,6 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     gradient_test_p2_indices = np_to_torch(gradient_test_p2_indices)
     gradient_test_p1_types = np_to_torch(gradient_test_p1_types)
     gradient_test_p2_types = np_to_torch(gradient_test_p2_types)
-    pitch_angle_test_g1_indices = np_to_torch(pitch_angle_test_g1_indices)
-    pitch_angle_test_g1_senses = np_to_torch(pitch_angle_test_g1_senses)
-    pitch_angle_test_g2_indices = np_to_torch(pitch_angle_test_g2_indices)
-    pitch_angle_test_g2_senses = np_to_torch(pitch_angle_test_g2_senses)
     
     del gradient_test_distances, est_pts_total_adjoining_segment_length
     all_points_arrays = [np_to_torch(a) for a in all_points_arrays]
@@ -599,27 +547,17 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         neighbour_grades = neighbour_heightdiffs*gradient_test_inv_distances
         neighbour_likelihood = (grade_logpdf(abs(neighbour_grades))*gradient_test_weights).sum()
         
-        pitch_angle_likelihood = 0
-        if use_pitch_angle_prior:
-            assert False
-            # gradients*sense gives gradient looking out from the pair midpoint
-            # to assess slope continuity we need to invert one of these gradients again to simulate arriving and leaving
-            pitch_angle_g1s = neighbour_grades[pitch_angle_test_g1_indices]*pitch_angle_test_g1_senses*-1
-            pitch_angle_g2s = neighbour_grades[pitch_angle_test_g2_indices]*pitch_angle_test_g2_senses
-            pitch_angles = grade_change_angle(pitch_angle_g1s,pitch_angle_g2s)
-            pitch_angle_likelihood = pitch_angle_logpdf(pitch_angles).sum() 
-        
         # Log likelihood of z errors
         z_error_likelihood = (z_error_logpdf(z_errors,estimated_point_max_tile_DZs_inverse_sq)*z_error_weights).sum()
-        return neighbour_likelihood,z_error_likelihood,pitch_angle_likelihood
+        return neighbour_likelihood,z_error_likelihood
         
     def likelihood_report(opt_params):
-        n,o,c = map(float,likelihood_breakdown(opt_params))
-        return n+o+c,f"   (Z error likelihood {o:.1f}, Slope likelihood {n:.1f}, Pitch angle likelihood {c:.1f})"
+        n,o = map(float,likelihood_breakdown(opt_params))
+        return n+o,f"   (Z error likelihood {o:.1f}, Slope likelihood {n:.1f})"
         
     def minus_log_likelihood(opt_params):
-        n,o,c = likelihood_breakdown(opt_params)
-        return -(n+o+c)
+        n,o = likelihood_breakdown(opt_params)
+        return -(n+o)
 
     def mll_cpu(opt_params):
         return minus_log_likelihood(opt_params).cpu()
@@ -749,7 +687,6 @@ def fit_model_from_command_line_options():
     op.add_option("--Z-ERROR-PRIOR-SCALE",dest="z_error_prior_scale",help="Scale of Gaussian prior for z mismatch (Defaults to 1, giving Hutchinson (1996) model. Set to 0 for simple drape. Higher numbers allow greater z correction)",metavar="SCALE",type="float")
     op.add_option("--SLOPE-PRIOR-MEAN",dest="slope_prior_mean",help=f"Mean of prior for path slope (defaults to {slope_prior_mean_default}; measured in degrees but prior is over grade)",metavar="ANGLE_IN_DEGREES",type="float")
     op.add_option("--SLOPE-CONTINUITY-PARAM",dest="slope_continuity_param",help=f"Parameter for shape of slope prior; set to 0 for exponential or 1 for Gaussian; defaults to {slope_continuity_param_default}.",metavar="PARAM",type="float")
-    op.add_option("--PITCH-ANGLE-PRIOR-MEAN",dest="pitch_angle_mean",help=f"Pitch angle prior mean (defaults to {pitch_angle_mean_default})",metavar="ANGLE_IN_DEGREES",type="float")
     op.add_option("--MAXITER",dest="maxiter",help=f"Maximum number of optimizer iterations (defaults to {maxiter_default}, set to 0 for naive drape)",metavar="N",type="int",default=maxiter_default)
     op.add_option("--NUGGET",dest="nugget",help=f"Nugget / assumed minimum elevation difference in flat terrain cell (defaults to {nugget_default_as_fraction_of_cell_size}*cell size)",metavar="Z_DISTANCE",type="float")
     op.add_option("--GPU",dest="cuda",action="store_true",help="Enable GPU acceleration")
@@ -801,7 +738,6 @@ def fit_model_from_command_line_options():
                         slope_prior_mean = options.slope_prior_mean,
                         z_error_prior_scale = options.z_error_prior_scale,
                         slope_continuity_param = options.slope_continuity_param,
-                        pitch_angle_mean = options.pitch_angle_mean,
                         nugget = options.nugget,
                         fix_geometries_mask = fix_geometries_mask,
                         decoupled_geometries_mask = decouple_geometries_mask,
