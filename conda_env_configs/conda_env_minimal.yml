@@ -1,4 +1,4 @@
-name: bayesiandrape
+name: bayesiandrape2
 channels:
   - pytorch
   - nvidia
@@ -11,5 +11,5 @@ dependencies:
   - shapely
   - scipy
   - pytorch
-  - cudatoolkit=11.1
   - pytest
+  - jupyter
