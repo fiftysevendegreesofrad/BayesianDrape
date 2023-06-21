@@ -685,7 +685,7 @@ def fit_model_from_command_line_options():
     op.add_option("--FIX-FIELD",dest="fixfield",help="Instead of estimating heights, preserve input z on features where FIELDNAME=true",metavar="FIELDNAME")
     op.add_option("--DECOUPLE-FIELD",dest="decouplefield",help="Instead of estimating heights, decouple features from terrain where FIELDNAME=true (useful for bridges/tunnels)",metavar="FIELDNAME")
     
-    op.add_option("--Z-ERROR-PRIOR-SCALE",dest="z_error_prior_scale",help="Scale of Gaussian prior for z mismatch (Defaults to 1, giving Hutchinson (1996) model. Set to 0 for simple drape. Higher numbers allow greater z correction)",metavar="SCALE",type="float")
+    op.add_option("--Z-ERROR-PRIOR-SCALE",dest="z_error_prior_scale",help=f"Scale of Gaussian prior for z mismatch (Defaults to {z_error_prior_scale_default}. 1.0 gives Hutchinson (1996) model. Set to 0 for simple drape. Higher numbers allow greater z correction)",metavar="SCALE",type="float")
     op.add_option("--SLOPE-PRIOR-MEAN",dest="slope_prior_mean",help=f"Mean of prior for path slope (defaults to {slope_prior_mean_default}; measured in degrees but prior is over grade)",metavar="ANGLE_IN_DEGREES",type="float")
     op.add_option("--SLOPE-CONTINUITY-PARAM",dest="slope_continuity_param",help=f"Parameter for shape of slope prior; set to 0 for exponential or 1 for Gaussian; defaults to {slope_continuity_param_default}.",metavar="PARAM",type="float")
     op.add_option("--MAXITER",dest="maxiter",help=f"Maximum number of optimizer iterations (defaults to {maxiter_default}, set to 0 for naive drape)",metavar="N",type="int",default=maxiter_default)
