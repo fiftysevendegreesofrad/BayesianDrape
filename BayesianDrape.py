@@ -99,6 +99,7 @@ def insert_points_on_gridlines(line,grid,tolerance):
     else:
         return line,0
         
+z_error_prior_scale_default = 0.25  # 1.0 gives behaviour of Hutchinson (1996)
 slope_continuity_param_default = 0.5
 slope_prior_mean_default = 2.66
 
@@ -156,7 +157,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     if slope_continuity_param is None:
         slope_continuity_param = slope_continuity_param_default
     if z_error_prior_scale is None:
-        z_error_prior_scale = 1 # not a magic default! gives behaviour of Hutchinson (1996)
+        z_error_prior_scale = z_error_prior_scale_default
     
     assert slope_continuity_param <= 1
     assert slope_continuity_param >= 0
