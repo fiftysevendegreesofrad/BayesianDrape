@@ -1,11 +1,9 @@
 # BayesianDrape
-Drape GPS traces and path networks over terrain using Bayesian maximum likelihood estimation. [More details on the algorithm here](https://users.cs.cf.ac.uk/CooperCH/bayesiandrape.pdf).
+Drape GPS traces and path networks over terrain using Bayesian maximum likelihood estimation.
 
-![image](https://user-images.githubusercontent.com/12543309/211039729-50f81ef3-466c-4a00-b8c8-4cd98bca9501.png)
+<img src="https://github.com/fiftysevendegreesofrad/BayesianDrape/assets/12543309/917089f8-92d9-44b7-adef-7d561e56f18c" width=550/>
 
 ![image](https://user-images.githubusercontent.com/12543309/137376777-69e42b05-269a-4144-8bf0-16fcf1cd355c.png)
-
-**Note 25/11/2022: If you plan to use this, at present you will need to calibrate the spatial mismatch prior scale to get good results. I am working on an improved version with the aim of removing the requirement to calibrate.**
 
 ## Setup
 
@@ -29,9 +27,9 @@ A minimal example:
     cd BayesianDrape
     python BayesianDrape.py --TERRAIN-INPUT data/all_os50_terrain.tif --POLYLINE-INPUT data/test_awkward_link.shp --OUTPUT bayes_drape_output.shp 
 
-You can create a naive drape for comparison by setting the spatial mismatch prior scale to zero:
+You can create a naive drape for comparison by setting MAXITER=0:
 
-    python BayesianDrape.py --TERRAIN-INPUT data/all_os50_terrain.tif --POLYLINE-INPUT data/test_awkward_link.shp --OUTPUT naive_drape_output.shp --SPATIAL-MISMATCH-PRIOR-SCALE=0
+    python BayesianDrape.py --TERRAIN-INPUT data/all_os50_terrain.tif --POLYLINE-INPUT data/test_awkward_link.shp --OUTPUT naive_drape_output.shp --MAXITER=0
 
 BayesianDrape is tested on `.tiff` and `.shp` files, but should be able to use any raster supported by [rioxarray](https://corteva.github.io/rioxarray/stable/) and any vector supported by [Geopandas](https://geopandas.org/).
 
@@ -39,45 +37,33 @@ For more options:
 
     python BayesianDrape.py --help
     
-    Options:
-      -h, --help            show this help message and exit
-      --TERRAIN-INPUT=FILE  [REQUIRED] Terrain model
-      --POLYLINE-INPUT=FILE
-                            [REQUIRED] Polyline feature class e.g. network or GPS
-                            trace
-      --OUTPUT=FILE         [REQUIRED] Output feature class
-      --FIX-FIELD=FIELDNAME
-                            Instead of estimating heights, preserve input z on
-                            features where FIELDNAME=true
-      --DECOUPLE-FIELD=FIELDNAME
-                            Instead of estimating heights, decouple features from
-                            terrain where FIELDNAME=true (useful for
-                            bridges/tunnels)
-      --SPATIAL-MISMATCH-PRIOR-SCALE=DISTANCE
-                            Standard deviation of zero-centred Gaussian prior for
-                            spatial mismatch (in spatial units of projection;
-                            defaults to half terrain raster cell size)
-      --SLOPE-PRIOR-SCALE=ANGLE_IN_DEGREES
-                            Scale of exponential prior for path slope (equivalent
-                            to mean slope; defaults to 2.66; measured in degrees
-                            but prior is over grade)
-      --SLOPE-CONTINUITY-PRIOR-SCALE=ANGLE_IN_DEGREES
-                            Scale of normal (slope continuity) prior for path
-                            slope (equivalent to mean slope; defaults to 90;
-                            measured in degrees but prior is over grade)
-      --PITCH-ANGLE-PRIOR-SCALE=ANGLE_IN_DEGREES
-                            Pitch angle prior scale (defaults to 1.28)
-      --SPATIAL-MISMATCH-MAX=DISTANCE
-                            Maximum permissible spatial mismatch (in spatial units
-                            of projection; defaults to maximum terrain tile
-                            dimension)
-      --MAXITER=N           Maximum number of optimizer iterations (defaults to
-                            10000)
-      --GPU                 Enable GPU acceleration
-      --NUM-THREADS=N       Set number of threads for multiprocessing (defaults to
-                            number of available cores)
-      --IGNORE-PROJ-MISMATCH
-                            Ignore mismatched projections
+        Options:
+          -h, --help            show this help message and exit
+          --TERRAIN-INPUT=FILE  [REQUIRED] Terrain model
+          --POLYLINE-INPUT=FILE
+                                [REQUIRED] Polyline feature class e.g. network or GPS trace
+          --OUTPUT=FILE         [REQUIRED] Output feature class
+          --FIX-FIELD=FIELDNAME
+                                Instead of estimating heights, preserve input z on features where FIELDNAME=true
+          --DECOUPLE-FIELD=FIELDNAME
+                                Instead of estimating heights, decouple features from terrain where FIELDNAME=true (useful for bridges/tunnels)
+          --Z-ERROR-PRIOR-SCALE=SCALE
+                                Scale of Gaussian prior for z mismatch (Defaults to 0.25. 1.0 gives Hutchinson (1996) model. Set to 0 for simple drape. Higher numbers allow greater z correction)
+          --SLOPE-PRIOR-MEAN=ANGLE_IN_DEGREES
+                                Mean of prior for path slope (defaults to 2.66; measured in degrees but prior is over grade)
+          --SLOPE-CONTINUITY-PARAM=PARAM
+                                Parameter for shape of slope prior; set to 0 for exponential or 1 for Gaussian; defaults to 0.5.
+          --PITCH-ANGLE-PRIOR-MEAN=ANGLE_IN_DEGREES
+                                Pitch angle prior mean (defaults to inf)
+          --MAXITER=N           Maximum number of optimizer iterations (defaults to 20000, set to 0 for naive drape)
+          --NUGGET=Z_DISTANCE   Nugget / assumed minimum elevation difference in flat terrain cell (defaults to 0.01*cell size)
+          --GPU                 Enable GPU acceleration
+          --NUM-THREADS=N       Set number of threads for multiprocessing (defaults to number of available cores)
+          --IGNORE-PROJ-MISMATCH
+                                Ignore mismatched projections
+          --ITERATION-REPORT-EVERY=N
+                                Report log likelihood every N iterations (set to 0 for never)
+          --DISABLE-AUTODIFF    Disable automatic differentiation (slow!)
 
 ## Use as a library
 
