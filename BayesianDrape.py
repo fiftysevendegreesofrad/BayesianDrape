@@ -105,12 +105,13 @@ pitch_angle_mean_default = np.inf
 nugget_default_as_fraction_of_cell_size = 1/100
 
 new_vertex_tolerance_as_fraction_of_cell_size = 1/100
+gradient_smooth_window_default_as_fraction_of_cell_size = 1/100
 
 def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
                 geometries,
                 slope_prior_mean=slope_prior_mean_default,z_error_prior_scale=None,slope_continuity_param=None,
                 pitch_angle_mean=None,nugget=None,
-                gradient_smooth_window=0,
+                z_smooth_window=0,gradient_smooth_window=None,
                 fix_geometries_mask=None,decoupled_geometries_mask=None,
                 use_cuda=False,
                 print_callback=print):
@@ -145,6 +146,9 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     cellsizey = abs(cellstepy)
     if nugget is None:
         nugget = min(cellsizex,cellsizey)*nugget_default_as_fraction_of_cell_size
+    if gradient_smooth_window is None:
+        gradient_smooth_window = min(cellsizex,cellsizey)*gradient_smooth_window_default_as_fraction_of_cell_size
+        print_callback(f"Gradient smooth window set from cell size: {gradient_smooth_window}")
         
     # constant parameter defaults 
     # (can't use default arguments as we want to support caller passing None)
@@ -161,7 +165,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     assert slope_continuity_param >= 0
     
     if z_error_prior_scale==0:
-        gradient_smooth_window=0
+        z_smooth_window=0
         
     use_pitch_angle_prior = pitch_angle_mean < np.inf
     
@@ -200,12 +204,12 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
         # swapping dimensions on our definition of points throughout, and ensuring all tensors are created contiguous, gives maybe 10% speed boost - reverting for now as that's premature
         if not torch.is_tensor(points_to_interpolate):
             points_to_interpolate = np_to_torch(points_to_interpolate)
-        return terrain_interpolator_internal.forward(points_to_interpolate[:,0].contiguous(),points_to_interpolate[:,1].contiguous(),gradient_smooth_window)    
+        return terrain_interpolator_internal.forward(points_to_interpolate[:,0].contiguous(),points_to_interpolate[:,1].contiguous(),z_smooth_window)    
 
     def get_max_tile_DZs(points_to_interpolate):
         if not torch.is_tensor(points_to_interpolate):
             points_to_interpolate = np_to_torch(points_to_interpolate)
-        return terrain_interpolator_internal.get_max_tile_DZs(points_to_interpolate[:,0].contiguous(),points_to_interpolate[:,1].contiguous())    
+        return terrain_interpolator_internal.get_max_tile_DZs(points_to_interpolate[:,0].contiguous(),points_to_interpolate[:,1].contiguous(),gradient_smooth_window)    
 
     # Feature type model: decoupled takes precedence over fixed as people are likely to fix large flat areas and decouples to smaller features like bridges within them
     num_point_types = 3
@@ -447,9 +451,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     pitch_angle_test_g1_senses = np.array(pitch_angle_test_g1_senses,dtype=np.byte)
     pitch_angle_test_g2_senses = np.array(pitch_angle_test_g2_senses,dtype=np.byte)
     
-    mean_estimated_segment_length = gradient_test_distances.mean()
     print_callback(f"Minimum estimated segment length {gradient_test_distances.min():.2f}")
-    print_callback(f"Mean estimated segment length: {mean_estimated_segment_length:.2f}")
             
     def init_guess_decoupled_zs():
         '''Distance weighted average of simple drape zs of boundary points'''
@@ -528,8 +530,8 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     # Define posterior log likelihood
 
     # Prepare arrays for likelihood tests
-    gradient_test_weights = np_to_torch(gradient_test_distances / mean_estimated_segment_length)
-    z_error_weights = np_to_torch(est_pts_total_adjoining_segment_length / 2 / mean_estimated_segment_length)
+    gradient_test_weights = np_to_torch(gradient_test_distances)
+    z_error_weights = np_to_torch(est_pts_total_adjoining_segment_length / 2)
     gradient_test_inv_distances = np_to_torch(gradient_test_distances**-1)
     gradient_test_p1_indices = np_to_torch(gradient_test_p1_indices)
     gradient_test_p2_indices = np_to_torch(gradient_test_p2_indices)
@@ -578,7 +580,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     
     interpolated_zs = terrain_interpolator(all_points_arrays[ESTIMATED])
     estimated_point_max_tile_DZs_inverse_sq = (get_max_tile_DZs(all_points_arrays[ESTIMATED])+nugget)**-2
-    
+            
     def likelihood_breakdown(opt_params):
         z_errors,decoupled_zs = unpack_opt_params(opt_params)
         
@@ -625,7 +627,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     def minus_log_likelihood_gradient(opt_params):
         opt_params = np_to_torch(opt_params)
         opt_params.requires_grad = True
-        minus_log_likelihood(opt_params).backward() 
+        minus_log_likelihood(opt_params).backward()
         return torch.nan_to_num(opt_params.grad,nan=0,posinf=np.inf,neginf=-np.inf).cpu()
         
     def reconstruct_geometries(opt_results):
@@ -666,7 +668,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     BayesianDrapeModel = namedtuple("BayesianDrapeModel",return_dict)
     return BayesianDrapeModel(**return_dict)
     
-def fit_model(model,maxiter,print_callback=print,reportiter=5,differentiate=True):
+def fit_model(model,maxiter,print_callback=print,reportiter=5,differentiate=True,returnStats=False):
     initial_log_likelihood,initial_lik_report = model.likelihood_report(model.initial_guess)
     print_callback(f"Num params: {model.initial_guess.shape[0]}")
     last_ll = initial_log_likelihood
@@ -698,7 +700,10 @@ def fit_model(model,maxiter,print_callback=print,reportiter=5,differentiate=True
     jac = model.minus_log_likelihood_gradient if differentiate else None
     print_callback (f"Starting optimizer log likelihood = {initial_log_likelihood:.1f}\n{initial_lik_report}")
     init_time = time.perf_counter()
-    result = minimize(model.minus_log_likelihood,model.initial_guess,callback = callback,bounds=Bounds(lower_bounds,upper_bounds),jac=jac,options=dict(maxiter=maxiter,maxfun=maxiter*20)) 
+    if maxiter>0:
+        result = minimize(model.minus_log_likelihood,model.initial_guess,callback = callback,bounds=Bounds(lower_bounds,upper_bounds),jac=jac,options=dict(maxiter=maxiter,maxfun=maxiter*20)) 
+    else:
+        result = {"message":"no iteration","x":model.initial_guess}
     end_time = time.perf_counter()
     t_secs = end_time - init_time
     
@@ -718,7 +723,12 @@ def fit_model(model,maxiter,print_callback=print,reportiter=5,differentiate=True
     print_callback(f"Total mean change in param: {abs(model.initial_guess-optimizer_results).mean()}")
     
     print_callback ("Reconstructing geometries")
-    return [LineString(geom) for geom in model.reconstruct_geometries_from_optimizer_results(optimizer_results)]
+    res = [LineString(geom) for geom in model.reconstruct_geometries_from_optimizer_results(optimizer_results)]
+    
+    if not returnStats:
+        return res
+    else:
+        return res, optimizer_results, callback_count
 
 def fit_model_from_command_line_options():
     from optparse import OptionParser
@@ -740,7 +750,7 @@ def fit_model_from_command_line_options():
     op.add_option("--SLOPE-PRIOR-MEAN",dest="slope_prior_mean",help=f"Mean of prior for path slope (defaults to {slope_prior_mean_default}; measured in degrees but prior is over grade)",metavar="ANGLE_IN_DEGREES",type="float")
     op.add_option("--SLOPE-CONTINUITY-PARAM",dest="slope_continuity_param",help=f"Parameter for shape of slope prior; set to 0 for exponential or 1 for Gaussian; defaults to {slope_continuity_param_default}.",metavar="PARAM",type="float")
     op.add_option("--PITCH-ANGLE-PRIOR-MEAN",dest="pitch_angle_mean",help=f"Pitch angle prior mean (defaults to {pitch_angle_mean_default})",metavar="ANGLE_IN_DEGREES",type="float")
-    op.add_option("--MAXITER",dest="maxiter",help=f"Maximum number of optimizer iterations (defaults to {maxiter_default})",metavar="N",type="int",default=maxiter_default)
+    op.add_option("--MAXITER",dest="maxiter",help=f"Maximum number of optimizer iterations (defaults to {maxiter_default}, set to 0 for naive drape)",metavar="N",type="int",default=maxiter_default)
     op.add_option("--NUGGET",dest="nugget",help=f"Nugget / assumed minimum elevation difference in flat terrain cell (defaults to {nugget_default_as_fraction_of_cell_size}*cell size)",metavar="Z_DISTANCE",type="float")
     op.add_option("--GPU",dest="cuda",action="store_true",help="Enable GPU acceleration")
     op.add_option("--NUM-THREADS",dest="threads",help="Set number of threads for multiprocessing (defaults to number of available cores)",type="int",metavar="N")

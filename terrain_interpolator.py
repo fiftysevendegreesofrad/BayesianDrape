@@ -46,12 +46,21 @@ class TerrainInterpolator(torch.nn.Module):
         denominator = (dist_west+dist_east)*(dist_north+dist_south)
         return numerator / denominator 
         
-    def get_max_tile_DZs(self,interp_xs,interp_ys):
+    def get_max_tile_DZs_single(self,interp_xs,interp_ys):
         corners,_ = self.get_tile_corner_zs(interp_xs,interp_ys)
         corners = torch.hstack([torch.reshape(corner,(-1,1)) for corner in corners])
         res = torch.max(corners,1).values-torch.min(corners,1).values
         assert res.size()==interp_xs.size()
         return res
+    
+    def get_max_tile_DZs(self,interp_xs,interp_ys,smooth):
+        if smooth==0:
+            return self.get_max_tile_DZs_single(interp_xs,interp_ys)
+        else:
+            return 0.25*(self.get_max_tile_DZs_single(interp_xs-smooth,interp_ys-smooth)\
+                         +self.get_max_tile_DZs_single(interp_xs+smooth,interp_ys-smooth)\
+                         +self.get_max_tile_DZs_single(interp_xs-smooth,interp_ys+smooth)\
+                         +self.get_max_tile_DZs_single(interp_xs+smooth,interp_ys+smooth))
         
     def forward(self, interp_xs, interp_ys, smooth):
         if smooth==0:
