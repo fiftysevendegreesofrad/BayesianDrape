@@ -1,7 +1,7 @@
 # BayesianDrape
 Drape GPS traces and path networks over terrain using Bayesian maximum likelihood estimation.
 
-![image](https://github.com/fiftysevendegreesofrad/BayesianDrape/assets/12543309/917089f8-92d9-44b7-adef-7d561e56f18c)
+<img src="https://github.com/fiftysevendegreesofrad/BayesianDrape/assets/12543309/917089f8-92d9-44b7-adef-7d561e56f18c" width=550/>
 
 ![image](https://user-images.githubusercontent.com/12543309/137376777-69e42b05-269a-4144-8bf0-16fcf1cd355c.png)
 
