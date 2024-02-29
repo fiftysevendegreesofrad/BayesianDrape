@@ -410,7 +410,7 @@ def build_model(terrain_index_xs,terrain_index_ys,terrain_zs,
     print_callback(f"Minimum estimated segment length {gradient_test_distances.min():.2f}")
             
     def init_guess_decoupled_zs():
-        '''Distance weighted average of simple drape zs of boundary points'''
+        '''Inverse distance weighted average of simple drape zs of boundary points'''
         decoupled_weighted_z_sum = np.zeros(num_decoupled_points)
         decoupled_weight_sum = np.zeros(num_decoupled_points)
 
