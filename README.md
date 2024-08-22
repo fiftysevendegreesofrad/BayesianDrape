@@ -1,6 +1,8 @@
 # BayesianDrape
 Drape GPS traces and path networks over terrain using Bayesian maximum likelihood estimation.
 
+This is the implementation for Cooper (2024), "Bayesian Inference of Elevation to Reduce Large Interpolation Errors in 2-d Road Features Draped Over Digital Elevation Models," in IEEE Access, vol. 12, pp. 54371-54387, 2024, doi: [10.1109/ACCESS.2024.3388292](https://doi.org/10.1109/ACCESS.2024.3388292). 
+
 <img src="https://github.com/fiftysevendegreesofrad/BayesianDrape/assets/12543309/917089f8-92d9-44b7-adef-7d561e56f18c" width=550/>
 
 ![image](https://user-images.githubusercontent.com/12543309/137376777-69e42b05-269a-4144-8bf0-16fcf1cd355c.png)
